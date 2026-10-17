@@ -100,6 +100,33 @@ def test_mcp_protocol_and_tools():
     assert rpc("bogus").json()["error"]["code"] == -32601
 
 
+def test_quota_circuit_breaker_skips_exhausted_model(monkeypatch):
+    calls = []
+
+    class FakeModels:
+        def generate_content(self, model, contents, config):
+            calls.append(model)
+            if model == "big":
+                raise RuntimeError("429 RESOURCE_EXHAUSTED: quota")
+            return type("R", (), {"text": '{"ok": true}'})()
+
+    class FakeClient:
+        def __init__(self, api_key=None):
+            self.models = FakeModels()
+
+    import google.genai
+
+    monkeypatch.setattr(google.genai, "Client", FakeClient)
+    monkeypatch.setenv("GEMINI_MODELS", "big,lite")
+    monkeypatch.setattr(agent, "_cooldown", {})
+    heals = []
+    assert agent.gemini_json(["x"], heals) == {"ok": True}
+    assert calls == ["big", "lite"] and "circuit breaker" in heals[0]  # no pointless retry on a spent quota
+    heals2 = []
+    assert agent.gemini_json(["x"], heals2) == {"ok": True}
+    assert calls[2:] == ["lite"] and heals2 == []  # breaker open: exhausted model skipped entirely
+
+
 def test_offline_intake_extracts_need():
     out = agent.intake("Urgent: 120 people in Velachery need water")
     n = out["needs"][0]

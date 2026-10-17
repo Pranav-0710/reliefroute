@@ -110,13 +110,19 @@ def _parse_json(text):
     return json.loads(m.group(0) if m else text)
 
 
+QUOTA_COOLDOWN_S = 300
+_cooldown = {}  # model -> time until which it is skipped (circuit breaker for exhausted quota)
+
+
 def gemini_json(parts, heals):
     from google import genai
     from google.genai import types
 
     client = genai.Client(api_key=_gemini_key())
     last = None
-    for model in _models():
+    now = time.time()
+    models = [m for m in _models() if _cooldown.get(m, 0) <= now] or _models()  # all cooling down: try anyway
+    for model in models:
         for attempt in range(2):
             try:
                 r = client.models.generate_content(
@@ -125,6 +131,12 @@ def gemini_json(parts, heals):
                 return _parse_json(r.text)
             except Exception as e:  # network, quota, bad JSON -> heal by retry/fallback
                 last = e
+                if "RESOURCE_EXHAUSTED" in str(e) or "429" in str(e):
+                    # retrying a spent quota is pointless: trip the breaker and route to the next model
+                    _cooldown[model] = time.time() + QUOTA_COOLDOWN_S
+                    heals.append(f"Gemini {model} quota exhausted -> circuit breaker routes to next model "
+                                 f"for {QUOTA_COOLDOWN_S // 60} min")
+                    break
                 heals.append(f"Gemini {model} attempt {attempt + 1} failed ({str(e)[:90]}) -> retrying")
                 time.sleep(0.5 * (attempt + 1))
     raise RuntimeError(f"all Gemini models failed: {last}")
