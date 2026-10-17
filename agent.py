@@ -275,8 +275,8 @@ def maps_eta(origin, dest, heals):
 def reflect(trace, total, strategy, heals, lessons):
     blocked = sum(len(t["info"]["blocked"]) for t in trace)
     unmet = trace[-1]["info"].get("unmet", [])
-    if llm_available():
-        summary = [{"step": t["step"], "reward": t["reward"], "blocked": t["info"]["blocked"],
+    if strategy == "llm" and llm_available():  # heuristic episodes reflect by rules: keeps training fast
+        summary =[{"step": t["step"], "reward": t["reward"], "blocked": t["info"]["blocked"],
                     "stockout": t["info"]["stockout"], "unmet": t["info"].get("unmet")} for t in trace]
         prompt = ("You are improving a flood-relief dispatch agent. Episode result: strategy=" + strategy +
                   f", total_reward={total}, self-heal events={heals[:8]}, steps={json.dumps(summary)}.\n"
@@ -360,4 +360,13 @@ def run_episode(seed=None, extra_needs=None, extra_hazards=None, chaos=True, str
 
 def train(episodes=5, chaos=True):
     results = [run_episode(chaos=chaos) for _ in range(episodes)]
-    return [{"strategy": r["strategy"], "reward": r["total_reward"], "heals": len(r["heals"])} for r in results]
+    summary = [{"strategy": r["strategy"], "reward": r["total_reward"], "heals": len(r["heals"])} for r in results]
+    return summary, results[-1]
+
+
+def preview(seed=7):
+    """Initial scenario for the map before any episode has run."""
+    env = ReliefEnv()
+    obs = env.reset(seed=seed, chaos=False)
+    return {"initial": {"depots": obs["depots"], "needs": obs["pending_needs"]}, "hazards": obs["known_hazards"],
+            "trace": [], "deliveries": [], "unmet": []}

@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ReliefRoute</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🚚</text></svg>">
 <style>
   :root { --bg:#0f1419; --panel:#182029; --line:#2a3542; --text:#e6edf3; --muted:#8b98a5;
           --accent:#4f9cff; --ok:#3fb950; --warn:#f0a020; --bad:#f85149; }
@@ -182,12 +183,19 @@ $("go").onclick = async () => {
 };
 
 $("train").onclick = async () => {
-  $("train").disabled = true; $("train").textContent = "Training…";
+  $("train").disabled = true;
+  $("log").innerHTML = "";
   try {
-    const r = await api("/api/train", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ episodes: 5, chaos: true }) });
-    $("log").innerHTML = "";
-    r.episodes.forEach((e, i) => ev(e.reward >= 0 ? "ok" : "bad", `Episode ${i + 1}: <b>${e.strategy}</b> → reward ${e.reward} · ${e.heals} self-heal events`));
-    renderMemory(r.memory);
+    for (let i = 1; i <= 5; i++) {  // one episode per request: live progress, no long-request timeouts
+      $("train").textContent = `Training ${i}/5…`;
+      const r = await api("/api/train", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ episodes: 1, chaos: true }) });
+      const e = r.episodes[0], last = r.last;
+      ev(e.reward >= 0 ? "ok" : "bad", `Episode ${i}: <b>${esc(e.strategy)}</b> → reward ${e.reward} · ${e.heals} self-heal events` +
+        last.heals.slice(0, 3).map(h => `<br><span class="muted">🩹 ${esc(h)}</span>`).join("") +
+        last.new_lessons.map(l => `<br>🧠 ${esc(l)}`).join(""));
+      drawMap(last);
+      renderMemory(r.memory);
+    }
   } catch (e) { ev("bad", "Error: " + esc(e.message)); }
   finally { $("train").disabled = false; $("train").textContent = "Train 5 episodes"; }
 };
@@ -208,6 +216,7 @@ $("rec").onclick = async () => {
 
 api("/healthz").then(h => $("badge").textContent = h.llm ? "Gemini online · " + h.models[0] : "offline mode (no API key)").catch(() => $("badge").textContent = "server unreachable");
 api("/api/memory").then(renderMemory).catch(() => {});
+api("/api/scenario").then(drawMap).catch(() => {});
 </script>
 </body>
 </html>

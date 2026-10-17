@@ -49,7 +49,13 @@ async def dispatch(text: str = Form(""), chaos: bool = Form(True),
 
 @app.post("/api/train")
 def train(req: TrainReq):
-    return {"episodes": agent.train(max(1, min(20, req.episodes)), req.chaos), "memory": agent.load_memory()}
+    episodes, last = agent.train(max(1, min(20, req.episodes)), req.chaos)
+    return {"episodes": episodes, "last": last, "memory": agent.load_memory()}
+
+
+@app.get("/api/scenario")
+def scenario():
+    return agent.preview()
 
 
 @app.get("/api/memory")

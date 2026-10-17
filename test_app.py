@@ -79,5 +79,7 @@ def test_api_end_to_end():
     body = r.json()
     assert body["intake"]["needs"] and body["trace"] and any(n["source"] == "field" for n in body["initial"]["needs"])
     t = c.post("/api/train", json={"episodes": 3}).json()
-    assert len(t["episodes"]) == 3
+    assert len(t["episodes"]) == 3 and t["last"]["trace"]
+    s = c.get("/api/scenario").json()
+    assert s["initial"]["depots"] and s["initial"]["needs"]
     assert c.post("/api/memory/reset").json()["episodes"] == []
