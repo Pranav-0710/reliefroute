@@ -61,6 +61,42 @@ def test_learning_updates_memory_and_bandit_prefers_better_policy():
     assert agent.select_strategy(mem, explore=False) != "fifo"
 
 
+def test_score_is_percentage_of_best_case():
+    r = agent.run_episode(seed=5, chaos=False, strategy="urgency_first")
+    assert 0 <= r["score"] <= 100
+    assert agent.load_memory()["episodes"][-1]["score"] == r["score"]
+
+
+def test_memory_restored_from_browser_copy_after_cold_start():
+    for _ in range(3):
+        agent.run_episode(chaos=True)
+    browser_copy = agent.load_memory()
+    agent.reset_memory()  # simulate a serverless instance losing /tmp
+    agent.sync_memory(browser_copy)
+    assert len(agent.load_memory()["episodes"]) == 3
+    agent.sync_memory({"episodes": "garbage"})  # malformed input is ignored
+    agent.sync_memory({"episodes": [{}], "bandit": {"evil": 1}})  # behind server copy: ignored
+    assert len(agent.load_memory()["episodes"]) == 3
+
+
+def test_mcp_protocol_and_tools():
+    from main import app
+
+    c = TestClient(app)
+    rpc = lambda method, params=None, mid=1: c.post("/mcp", json={"jsonrpc": "2.0", "id": mid, "method": method,
+                                                                   "params": params or {}})
+    init = rpc("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
+                              "clientInfo": {"name": "t", "version": "0"}}).json()["result"]
+    assert init["protocolVersion"] == "2025-06-18" and "tools" in init["capabilities"]
+    assert c.post("/mcp", json={"jsonrpc": "2.0", "method": "notifications/initialized"}).status_code == 202
+    names = {t["name"] for t in rpc("tools/list").json()["result"]["tools"]}
+    assert names == {"parse_field_report", "dispatch_relief", "train_agent", "get_memory"}
+    out = rpc("tools/call", {"name": "dispatch_relief", "arguments": {"text": "Urgent 90 water in Adyar"}}).json()
+    assert out["result"]["isError"] is False and out["result"]["structuredContent"]["deliveries"]
+    assert rpc("tools/call", {"name": "nope"}).json()["error"]["code"] == -32602
+    assert rpc("bogus").json()["error"]["code"] == -32601
+
+
 def test_offline_intake_extracts_need():
     out = agent.intake("Urgent: 120 people in Velachery need water")
     n = out["needs"][0]

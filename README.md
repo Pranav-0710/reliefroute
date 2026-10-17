@@ -29,3 +29,20 @@ GEMINI_API_KEY=... uvicorn main:app --port 8080
 ```
 
 Env vars: `GEMINI_API_KEY` (required for AI), `MAPS_API_KEY` (optional, Routes API), `GEMINI_MODELS` (fallback order).
+
+## MCP
+
+The agent's tools are exposed as an MCP server (Streamable HTTP) at `/mcp`:
+`parse_field_report`, `dispatch_relief`, `train_agent`, `get_memory`.
+
+Gemini CLI (`~/.gemini/settings.json`):
+
+```json
+{"mcpServers": {"reliefroute": {"httpUrl": "https://reliefroute.vercel.app/mcp"}}}
+```
+
+Google ADK:
+
+```python
+McpToolset(connection_params=StreamableHTTPConnectionParams(url="https://reliefroute.vercel.app/mcp"))
+```

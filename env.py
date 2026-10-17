@@ -91,7 +91,9 @@ class ReliefEnv:
             n["requested"] = n["qty"]
         self._s = {"seed": seed, "step": 0, "depots": depots, "needs": needs, "hazards": hazards,
                    "pending": [n["id"] for n in needs], "deliveries": [], "events": [],
-                   "total_reward": 0.0, "done": False, "chaos": chaos}
+                   "total_reward": 0.0, "done": False, "chaos": chaos,
+                   # best case: every need fully served instantly; used to normalise scores to %
+                   "max_reward": sum(n["urgency"] * 10 for n in needs)}
         return self.observation()
 
     def step(self, action):

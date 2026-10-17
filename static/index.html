@@ -13,10 +13,11 @@
   header { padding:14px 20px; border-bottom:1px solid var(--line); display:flex; gap:12px; align-items:baseline; flex-wrap:wrap; }
   header h1 { margin:0; font-size:20px; }
   header span { color:var(--muted); }
-  #badge { margin-left:auto; padding:2px 10px; border-radius:99px; border:1px solid var(--line); font-size:12px; }
+  .pill { padding:2px 10px; border-radius:99px; border:1px solid var(--line); font-size:12px; color:var(--text); }
+  #badge { margin-left:auto; }
   main { display:grid; grid-template-columns: 340px 1fr 340px; gap:14px; padding:14px; }
   @media (max-width: 1100px) { main { grid-template-columns: 1fr; } }
-  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px; min-width:0; }
   .card h2 { margin:0 0 10px; font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); }
   textarea { width:100%; min-height:110px; background:var(--bg); color:var(--text); border:1px solid var(--line); border-radius:8px; padding:8px; font:inherit; }
   label { display:block; margin:10px 0 4px; color:var(--muted); font-size:12px; }
@@ -24,13 +25,25 @@
   button { background:var(--accent); color:#fff; border:0; border-radius:8px; padding:9px 14px; font-weight:600; cursor:pointer; }
   button.secondary { background:transparent; border:1px solid var(--line); color:var(--text); }
   button:disabled { opacity:.5; cursor:wait; }
+  .chips { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:8px; }
+  .chip { background:transparent; border:1px solid var(--line); color:var(--text); padding:4px 10px; font-size:12px; font-weight:500; border-radius:99px; }
+  .chip:hover { border-color:var(--accent); }
   .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:10px; }
+  .pipe { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:10px; }
+  .pipe span { padding:3px 10px; border-radius:99px; border:1px solid var(--line); color:var(--muted); font-size:12px; transition:all .25s; }
+  .pipe span.on { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .pipe span.heal.on { background:var(--warn); border-color:var(--warn); }
+  .pipe span.learn.on { background:var(--ok); border-color:var(--ok); }
+  .pipe.busy span { animation:pulse 1.2s infinite; }
+  @keyframes pulse { 50% { opacity:.35; } }
   svg { width:100%; height:auto; background:#0b1016; border-radius:8px; }
   #log { max-height:430px; overflow:auto; font-size:13px; }
   .ev { padding:6px 8px; border-left:3px solid var(--line); margin:4px 0; background:#121a22; border-radius:4px; }
   .ev.heal { border-color:var(--warn); } .ev.ok { border-color:var(--ok); } .ev.bad { border-color:var(--bad); } .ev.info { border-color:var(--accent); }
   table { width:100%; border-collapse:collapse; font-size:13px; } td, th { padding:4px; border-bottom:1px solid var(--line); text-align:left; }
+  tr.best td { color:var(--ok); font-weight:600; }
   ul { padding-left:18px; margin:6px 0; } .muted { color:var(--muted); }
+  #trend { margin-top:6px; font-size:13px; }
   .legend { display:flex; gap:12px; flex-wrap:wrap; font-size:12px; color:var(--muted); margin-top:8px; }
 </style>
 </head>
@@ -38,11 +51,18 @@
 <header>
   <h1>🚚 ReliefRoute</h1>
   <span>Multimodal, self-healing, self-learning flood-relief logistics agent · Gemini + Google Maps</span>
-  <div id="badge">checking…</div>
+  <span class="pill" title="MCP Streamable HTTP endpoint exposing the agent's tools">MCP · /mcp</span>
+  <div id="badge" class="pill">checking…</div>
 </header>
 <main>
   <section class="card">
     <h2>1 · Field report (any language)</h2>
+    <div class="chips">
+      <button class="chip" data-t="Velachery la 120 families maadila maatikittaanga, kudika thanni and medicine urgent-a venum. Saidapet bridge road flooded.">Tanglish</button>
+      <button class="chip" data-t="அடையாறு பகுதியில் 200 பேருக்கு குடிநீர் தேவை. மருத்துவமனையில் மருந்துகள் தீர்ந்துவிட்டன, அவசரம்!">தமிழ்</button>
+      <button class="chip" data-t="पेरम्बूर में 80 लोग फंसे हैं, खाना और कंबल चाहिए। बच्चे और बुज़ुर्ग भी हैं, जल्दी भेजिए।">हिन्दी</button>
+      <button class="chip" data-t="Royapuram relief camp: 150 people need food packets and blankets tonight. Ennore road is underwater.">English</button>
+    </div>
     <textarea id="text" placeholder="e.g. Velachery: 120 families stranded on rooftops, need drinking water and medicine urgently. Road near Saidapet bridge is flooded."></textarea>
     <label>📷 Photo (flooded road, handwritten need list, warehouse)</label>
     <input type="file" id="image" accept="image/*">
@@ -65,6 +85,11 @@
   </section>
 
   <section class="card">
+    <h2>Agent pipeline</h2>
+    <div class="pipe" id="pipe">
+      <span>1 Understand</span><span>2 Plan</span><span>3 Dispatch</span><span>4 Disruption</span>
+      <span class="heal">5 Self-heal</span><span>6 Score</span><span class="learn">7 Learn</span>
+    </div>
     <h2>Live operations map · Chennai</h2>
     <svg id="map" viewBox="0 0 600 560"></svg>
     <div class="legend">
@@ -72,12 +97,13 @@
       <span style="color:#3fb950">— delivered</span><span style="color:#3fb950">- - detour</span><span style="color:#f85149">✖ blocked → healed</span>
     </div>
     <h2 style="margin-top:14px">Agent log</h2>
-    <div id="log"><div class="muted">Submit a field report or train the agent.</div></div>
+    <div id="log"><div class="muted">Pick a sample report and press Dispatch, or train the agent.</div></div>
   </section>
 
   <section class="card">
-    <h2>Reward over episodes</h2>
+    <h2>Score over episodes (%)</h2>
     <svg id="chart" viewBox="0 0 320 170"></svg>
+    <div id="trend" class="muted"></div>
     <h2 style="margin-top:14px">Policy (bandit RL)</h2>
     <table id="bandit"></table>
     <h2 style="margin-top:14px">Learned lessons (memory)</h2>
@@ -91,7 +117,10 @@ const W = 600, H = 560;
 const px = (lat, lng) => [ (lng - B.lngMin) / (B.lngMax - B.lngMin) * W, (B.latMax - lat) / (B.latMax - B.latMin) * H ];
 const PX_PER_KM = W / ((B.lngMax - B.lngMin) * 111.32 * Math.cos(13.05 * Math.PI / 180));
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-let recBlob = null, recorder = null;
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const MEM_KEY = "reliefroute-memory";
+let recBlob = null, recorder = null, localMem = null;
+try { localMem = JSON.parse(localStorage.getItem(MEM_KEY)); } catch { localMem = null; }
 
 function ev(cls, html) { const d = document.createElement("div"); d.className = "ev " + cls; d.innerHTML = html; $("log").appendChild(d); }
 
@@ -101,6 +130,17 @@ async function api(path, opts) {
   return r.json();
 }
 
+// ---- pipeline bar --------------------------------------------------------
+function pipeBusy() { $("pipe").classList.add("busy"); [...$("pipe").children].forEach(s => s.classList.remove("on")); }
+async function pipeRun(healed) {
+  $("pipe").classList.remove("busy");
+  for (const [i, s] of [...$("pipe").children].entries()) {
+    if ((i === 3 || i === 4) && !healed) continue;  // no disruption this run
+    s.classList.add("on"); await sleep(300);
+  }
+}
+
+// ---- map -----------------------------------------------------------------
 function drawMap(res) {
   const depots = Object.fromEntries(res.initial.depots.map(d => [d.id, d]));
   const needs = Object.fromEntries(res.initial.needs.map(n => [n.id, n]));
@@ -132,53 +172,72 @@ function drawMap(res) {
   $("map").innerHTML = s;
 }
 
+// ---- learning panel --------------------------------------------------------
 function renderMemory(mem) {
+  localMem = mem;
+  try { localStorage.setItem(MEM_KEY, JSON.stringify(mem)); } catch {}
   const eps = mem.episodes.slice(-40);
-  let s = `<line x1="30" y1="150" x2="315" y2="150" stroke="#2a3542"/>`;
+  const vals = eps.map(e => e.score ?? 0);
+  const X = i => 30 + (eps.length === 1 ? 140 : i * 285 / (eps.length - 1)), Y = v => 150 - v / 100 * 135;
+  let s = `<line x1="30" y1="150" x2="315" y2="150" stroke="#2a3542"/><line x1="30" y1="15" x2="315" y2="15" stroke="#2a3542" stroke-dasharray="2 4"/>
+           <text x="2" y="18" fill="#8b98a5" font-size="10">100%</text><text x="8" y="150" fill="#8b98a5" font-size="10">0%</text>`;
   if (eps.length) {
-    const vals = eps.map(e => e.reward), lo = Math.min(...vals, 0), hi = Math.max(...vals, 1);
-    const X = i => 30 + (eps.length === 1 ? 140 : i * 285 / (eps.length - 1)), Y = v => 150 - (v - lo) / (hi - lo || 1) * 135;
     const avg = vals.map((_, i) => { const w = vals.slice(Math.max(0, i - 4), i + 1); return w.reduce((a, b) => a + b, 0) / w.length; });
     s += `<polyline fill="none" stroke="#4f9cff66" points="${vals.map((v, i) => X(i) + "," + Y(v)).join(" ")}"/>`;
+    s += vals.map((v, i) => `<circle cx="${X(i)}" cy="${Y(v)}" r="2.5" fill="#4f9cff"/>`).join("");
     s += `<polyline fill="none" stroke="#3fb950" stroke-width="2.5" points="${avg.map((v, i) => X(i) + "," + Y(v)).join(" ")}"/>`;
-    s += `<text x="2" y="18" fill="#8b98a5" font-size="10">${hi.toFixed(0)}</text><text x="2" y="150" fill="#8b98a5" font-size="10">${lo.toFixed(0)}</text>`;
-    s += `<text x="180" y="165" fill="#8b98a5" font-size="10">episodes · green = moving avg</text>`;
+    s += `<text x="150" y="165" fill="#8b98a5" font-size="10">episodes · green = moving avg</text>`;
   } else s += `<text x="80" y="85" fill="#8b98a5" font-size="12">no episodes yet</text>`;
   $("chart").innerHTML = s;
-  $("bandit").innerHTML = "<tr><th>strategy</th><th>runs</th><th>avg reward</th></tr>" +
-    Object.entries(mem.bandit).map(([k, v]) => `<tr><td>${k}</td><td>${v.n}</td><td>${v.mean}</td></tr>`).join("");
+  const all = mem.episodes.map(e => e.score ?? 0), mean = a => a.reduce((x, y) => x + y, 0) / a.length;
+  if (all.length >= 6) {
+    const first = mean(all.slice(0, 5)), last = mean(all.slice(-5)), d = last - first;
+    $("trend").innerHTML = `Avg score: first 5 runs <b>${first.toFixed(0)}%</b> → last 5 runs <b style="color:${d >= 0 ? "#3fb950" : "#f0a020"}">${last.toFixed(0)}%</b> (${d >= 0 ? "+" : ""}${d.toFixed(0)})`;
+  } else $("trend").textContent = all.length ? `${all.length} episode(s) so far: train more to see the trend` : "";
+  const tried = Object.entries(mem.bandit).filter(([, v]) => v.n);
+  const best = tried.length ? tried.reduce((a, b) => (b[1].mean > a[1].mean ? b : a))[0] : null;
+  $("bandit").innerHTML = "<tr><th>strategy</th><th>runs</th><th>avg score</th></tr>" +
+    Object.entries(mem.bandit).map(([k, v]) => `<tr class="${k === best ? "best" : ""}"><td>${k === best ? "★ " : ""}${esc(k)}</td><td>${v.n}</td><td>${v.n ? v.mean.toFixed(0) + "%" : "–"}</td></tr>`).join("");
   $("lessons").innerHTML = mem.lessons.length ? mem.lessons.map(l => `<li>${esc(l)}</li>`).join("") : '<li class="muted">none yet</li>';
 }
 
 function renderEpisode(res) {
   $("log").innerHTML = "";
   if (res.intake) {
-    ev("info", `<b>Intake</b> (${esc(res.intake.language)}): ${esc(res.intake.summary)}<br>` +
+    ev("info", `<b>1 Understand</b> (${esc(res.intake.language)}): ${esc(res.intake.summary)}<br>` +
       res.intake.needs.map(n => `• ${esc(n.zone)}: ${n.qty} ${n.item}, urgency ${n.urgency} <span class="muted">${esc(n.evidence)}</span>`).join("<br>") +
       (res.intake.hazards.length ? "<br>⚠ hazards: " + res.intake.hazards.map(h => esc(h.label)).join(", ") : ""));
   }
   for (const t of res.trace) {
-    ev(t.info.blocked.length ? "bad" : "ok", `<b>Step ${t.step}</b> · ${esc(t.strategy)} · reward ${t.reward}<br><span class="muted">${esc(t.reasoning)}</span><br>` +
+    ev(t.info.blocked.length ? "bad" : "ok", `<b>Step ${t.step}: plan + dispatch</b> · ${esc(t.strategy)} · reward ${t.reward}<br><span class="muted">${esc(t.reasoning)}</span><br>` +
       t.info.delivered.map(d => `✔ ${d.need_id} ← ${d.depot_id}: ${d.qty} ${d.item}, ${d.km} km${d.detour ? " (detour)" : ""}` +
         (d.eta ? ` · <b>${d.eta.minutes} min via ${d.eta.source}</b>` : "")).join("<br>") +
       t.info.blocked.map(b => `<br>✖ ${b.need_id} ← ${b.depot_id} blocked by ${b.hazards.join(",")}`).join(""));
   }
   for (const h of res.heals) ev("heal", "🩹 " + esc(h));
-  ev(res.unmet.length ? "bad" : "ok", `<b>Episode reward ${res.total_reward}</b> · unmet: ${res.unmet.join(", ") || "none"}`);
-  for (const l of res.new_lessons) ev("info", "🧠 learned: " + esc(l));
+  ev(res.unmet.length ? "bad" : "ok", `<b>6 Score: ${res.score}%</b> of best possible (reward ${res.total_reward}) · unmet: ${res.unmet.join(", ") || "none"}`);
+  for (const l of res.new_lessons) ev("info", "🧠 <b>7 Learned:</b> " + esc(l));
   drawMap(res);
 }
+
+// ---- actions ---------------------------------------------------------------
+document.querySelectorAll(".chip").forEach(c => c.onclick = () => { $("text").value = c.dataset.t; });
 
 $("go").onclick = async () => {
   const fd = new FormData();
   fd.append("text", $("text").value);
   fd.append("chaos", $("chaos").checked);
+  if (localMem) fd.append("memory", JSON.stringify(localMem));
   if ($("image").files[0]) fd.append("image", $("image").files[0]);
   if ($("audio").files[0]) fd.append("audio", $("audio").files[0]);
-  else if (recBlob) fd.append("audio", recBlob, "voice.webm");
-  $("go").disabled = true; $("go").textContent = "Agent working…";
-  try { renderEpisode(await api("/api/dispatch", { method: "POST", body: fd })); renderMemory(await api("/api/memory")); }
-  catch (e) { ev("bad", "Error: " + esc(e.message)); }
+  else if (recBlob) fd.append("audio", recBlob, recBlob.type === "audio/wav" ? "voice.wav" : "voice.webm");
+  $("go").disabled = true; $("go").textContent = "Agent working…"; pipeBusy();
+  $("log").innerHTML = '<div class="muted">Gemini is reading the report, planning, handling disruptions and reflecting (30–90 s)…</div>';
+  try {
+    const res = await api("/api/dispatch", { method: "POST", body: fd });
+    renderEpisode(res); renderMemory(res.memory);
+    await pipeRun(res.trace.some(t => t.info.blocked.length));
+  } catch (e) { $("pipe").classList.remove("busy"); ev("bad", "Error: " + esc(e.message)); }
   finally { $("go").disabled = false; $("go").textContent = "Dispatch relief →"; }
 };
 
@@ -188,9 +247,10 @@ $("train").onclick = async () => {
   try {
     for (let i = 1; i <= 5; i++) {  // one episode per request: live progress, no long-request timeouts
       $("train").textContent = `Training ${i}/5…`;
-      const r = await api("/api/train", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ episodes: 1, chaos: true }) });
+      const r = await api("/api/train", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ episodes: 1, chaos: true, memory: localMem }) });
       const e = r.episodes[0], last = r.last;
-      ev(e.reward >= 0 ? "ok" : "bad", `Episode ${i}: <b>${esc(e.strategy)}</b> → reward ${e.reward} · ${e.heals} self-heal events` +
+      ev(e.score >= 50 ? "ok" : "bad", `Episode ${i}: <b>${esc(e.strategy)}</b> → score <b>${e.score}%</b> · ${e.heals} self-heal events` +
         last.heals.slice(0, 3).map(h => `<br><span class="muted">🩹 ${esc(h)}</span>`).join("") +
         last.new_lessons.map(l => `<br>🧠 ${esc(l)}`).join(""));
       drawMap(last);
@@ -200,7 +260,30 @@ $("train").onclick = async () => {
   finally { $("train").disabled = false; $("train").textContent = "Train 5 episodes"; }
 };
 
-$("reset").onclick = async () => renderMemory(await api("/api/memory/reset", { method: "POST" }));
+$("reset").onclick = async () => {
+  try { localStorage.removeItem(MEM_KEY); } catch {}
+  localMem = null;
+  renderMemory(await api("/api/memory/reset", { method: "POST" }));
+};
+
+// Browsers record webm/ogg; Gemini reliably accepts WAV, so convert to 16 kHz mono PCM.
+async function toWav(blob) {
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  try {
+    const buf = await ctx.decodeAudioData(await blob.arrayBuffer());
+    const rate = 16000, off = new OfflineAudioContext(1, Math.ceil(buf.duration * rate), rate);
+    const src = off.createBufferSource(); src.buffer = buf; src.connect(off.destination); src.start();
+    const data = (await off.startRendering()).getChannelData(0);
+    const v = new DataView(new ArrayBuffer(44 + data.length * 2));
+    const str = (o, s) => [...s].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
+    str(0, "RIFF"); v.setUint32(4, 36 + data.length * 2, true); str(8, "WAVE"); str(12, "fmt ");
+    v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, rate, true);
+    v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+    str(36, "data"); v.setUint32(40, data.length * 2, true);
+    data.forEach((x, i) => v.setInt16(44 + i * 2, Math.max(-1, Math.min(1, x)) * 0x7fff, true));
+    return new Blob([v], { type: "audio/wav" });
+  } finally { ctx.close(); }
+}
 
 $("rec").onclick = async () => {
   if (recorder && recorder.state === "recording") { recorder.stop(); return; }
@@ -208,14 +291,19 @@ $("rec").onclick = async () => {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     const chunks = []; recorder = new MediaRecorder(stream);
     recorder.ondataavailable = e => chunks.push(e.data);
-    recorder.onstop = () => { recBlob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" }); stream.getTracks().forEach(t => t.stop());
-      $("rec").textContent = "● Record"; $("recState").textContent = `recorded ${(recBlob.size / 1024).toFixed(0)} KB`; };
-    recorder.start(); $("rec").textContent = "■ Stop"; $("recState").textContent = "recording…";
+    recorder.onstop = async () => {
+      stream.getTracks().forEach(t => t.stop());
+      const raw = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+      try { recBlob = await toWav(raw); } catch { recBlob = raw; }
+      $("rec").textContent = "● Record"; $("recState").textContent = `recorded ${(recBlob.size / 1024).toFixed(0)} KB, ready to dispatch`;
+    };
+    recorder.start(); $("rec").textContent = "■ Stop"; $("recState").textContent = "recording… speak your report";
   } catch (e) { $("recState").textContent = "mic unavailable"; }
 };
 
+// ---- startup ---------------------------------------------------------------
 api("/healthz").then(h => $("badge").textContent = h.llm ? "Gemini online · " + h.models[0] : "offline mode (no API key)").catch(() => $("badge").textContent = "server unreachable");
-api("/api/memory").then(renderMemory).catch(() => {});
+api("/api/memory").then(m => renderMemory(localMem && localMem.episodes && localMem.episodes.length > m.episodes.length ? localMem : m)).catch(() => {});
 api("/api/scenario").then(drawMap).catch(() => {});
 </script>
 </body>

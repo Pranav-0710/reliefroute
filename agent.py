@@ -68,6 +68,26 @@ def save_memory(mem):
         json.dump(mem, f, indent=1)
 
 
+def sync_memory(client_mem):
+    """Adopt the browser's copy of memory when it is ahead of ours.
+
+    Serverless instances lose /tmp when they restart; the browser keeps a copy so
+    learning survives cold starts.
+    """
+    if not isinstance(client_mem, dict) or not isinstance(client_mem.get("episodes"), list):
+        return
+    with _lock:
+        mem = load_memory()
+        if len(client_mem["episodes"]) <= len(mem["episodes"]):
+            return
+        bandit = {s: {"n": int(v.get("n", 0)), "mean": float(v.get("mean", 0.0))}
+                  for s, v in (client_mem.get("bandit") or {}).items()
+                  if s in STRATEGIES and isinstance(v, dict)}
+        save_memory({"lessons": [str(l)[:160] for l in client_mem.get("lessons") or []][-8:],
+                     "episodes": [e for e in client_mem["episodes"] if isinstance(e, dict)][-200:],
+                     "bandit": bandit})
+
+
 def reset_memory():
     with _lock:
         save_memory(load_memory() | {"lessons": [], "episodes": [], "bandit": {}})
@@ -328,6 +348,8 @@ def run_episode(seed=None, extra_needs=None, extra_hazards=None, chaos=True, str
             break
     st = env.state()
     total = st["total_reward"]
+    # % of the best possible outcome, so episodes of different difficulty are comparable
+    score = round(max(0.0, 100 * total / st["max_reward"]), 1) if st["max_reward"] else 0.0
     new_lessons = reflect(trace, total, strategy, heals, mem["lessons"])
 
     deliveries = st["deliveries"]
@@ -343,16 +365,18 @@ def run_episode(seed=None, extra_needs=None, extra_hazards=None, chaos=True, str
         mem = load_memory()
         arm = mem["bandit"][strategy]
         arm["n"] += 1
-        arm["mean"] = round(arm["mean"] + (total - arm["mean"]) / arm["n"], 2)
+        arm["mean"] = round(arm["mean"] + (score - arm["mean"]) / arm["n"], 2)
         for l in new_lessons:
             if l not in mem["lessons"]:
                 mem["lessons"].append(l)
         mem["lessons"] = mem["lessons"][-8:]
-        mem["episodes"].append({"n": len(mem["episodes"]) + 1, "strategy": strategy, "reward": total,
+        n = mem["episodes"][-1]["n"] + 1 if mem["episodes"] else 1
+        mem["episodes"].append({"n": n, "strategy": strategy, "reward": total, "score": score,
                                 "heals": len(heals), "ts": int(time.time())})
+        mem["episodes"] = mem["episodes"][-200:]
         save_memory(mem)
 
-    return {"strategy": strategy, "total_reward": total, "trace": trace, "heals": heals,
+    return {"strategy": strategy, "total_reward": total, "score": score, "trace": trace, "heals": heals,
             "new_lessons": new_lessons, "initial": initial, "hazards": st["hazards"],
             "deliveries": deliveries, "unmet": trace[-1]["info"].get("unmet", []),
             "llm": llm_available()}
@@ -360,7 +384,8 @@ def run_episode(seed=None, extra_needs=None, extra_hazards=None, chaos=True, str
 
 def train(episodes=5, chaos=True):
     results = [run_episode(chaos=chaos) for _ in range(episodes)]
-    summary = [{"strategy": r["strategy"], "reward": r["total_reward"], "heals": len(r["heals"])} for r in results]
+    summary = [{"strategy": r["strategy"], "reward": r["total_reward"], "score": r["score"],
+                "heals": len(r["heals"])} for r in results]
     return summary, results[-1]
 
 
