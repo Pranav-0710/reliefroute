@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ReliefRoute</title>
+<style>
+  :root { --bg:#0f1419; --panel:#182029; --line:#2a3542; --text:#e6edf3; --muted:#8b98a5;
+          --accent:#4f9cff; --ok:#3fb950; --warn:#f0a020; --bad:#f85149; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 system-ui, sans-serif; }
+  header { padding:14px 20px; border-bottom:1px solid var(--line); display:flex; gap:12px; align-items:baseline; flex-wrap:wrap; }
+  header h1 { margin:0; font-size:20px; }
+  header span { color:var(--muted); }
+  #badge { margin-left:auto; padding:2px 10px; border-radius:99px; border:1px solid var(--line); font-size:12px; }
+  main { display:grid; grid-template-columns: 340px 1fr 340px; gap:14px; padding:14px; }
+  @media (max-width: 1100px) { main { grid-template-columns: 1fr; } }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px; }
+  .card h2 { margin:0 0 10px; font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); }
+  textarea { width:100%; min-height:110px; background:var(--bg); color:var(--text); border:1px solid var(--line); border-radius:8px; padding:8px; font:inherit; }
+  label { display:block; margin:10px 0 4px; color:var(--muted); font-size:12px; }
+  input[type=file] { width:100%; color:var(--muted); }
+  button { background:var(--accent); color:#fff; border:0; border-radius:8px; padding:9px 14px; font-weight:600; cursor:pointer; }
+  button.secondary { background:transparent; border:1px solid var(--line); color:var(--text); }
+  button:disabled { opacity:.5; cursor:wait; }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:10px; }
+  svg { width:100%; height:auto; background:#0b1016; border-radius:8px; }
+  #log { max-height:430px; overflow:auto; font-size:13px; }
+  .ev { padding:6px 8px; border-left:3px solid var(--line); margin:4px 0; background:#121a22; border-radius:4px; }
+  .ev.heal { border-color:var(--warn); } .ev.ok { border-color:var(--ok); } .ev.bad { border-color:var(--bad); } .ev.info { border-color:var(--accent); }
+  table { width:100%; border-collapse:collapse; font-size:13px; } td, th { padding:4px; border-bottom:1px solid var(--line); text-align:left; }
+  ul { padding-left:18px; margin:6px 0; } .muted { color:var(--muted); }
+  .legend { display:flex; gap:12px; flex-wrap:wrap; font-size:12px; color:var(--muted); margin-top:8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🚚 ReliefRoute</h1>
+  <span>Multimodal, self-healing, self-learning flood-relief logistics agent · Gemini + Google Maps</span>
+  <div id="badge">checking…</div>
+</header>
+<main>
+  <section class="card">
+    <h2>1 · Field report (any language)</h2>
+    <textarea id="text" placeholder="e.g. Velachery: 120 families stranded on rooftops, need drinking water and medicine urgently. Road near Saidapet bridge is flooded."></textarea>
+    <label>📷 Photo (flooded road, handwritten need list, warehouse)</label>
+    <input type="file" id="image" accept="image/*">
+    <label>🎙️ Voice note (upload or record)</label>
+    <input type="file" id="audio" accept="audio/*">
+    <div class="row">
+      <button class="secondary" id="rec">● Record</button><span id="recState" class="muted"></span>
+    </div>
+    <div class="row">
+      <label style="margin:0"><input type="checkbox" id="chaos" checked> 🌊 Simulate live disruption</label>
+    </div>
+    <div class="row"><button id="go">Dispatch relief →</button></div>
+    <hr style="border-color:var(--line); margin:16px 0">
+    <h2>2 · Self-learning (simulator)</h2>
+    <p class="muted" style="margin:0">Agent plays random disaster episodes in the OpenEnv-style simulator, scores itself, reflects and improves its policy.</p>
+    <div class="row">
+      <button id="train">Train 5 episodes</button>
+      <button class="secondary" id="reset">Reset memory</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Live operations map · Chennai</h2>
+    <svg id="map" viewBox="0 0 600 560"></svg>
+    <div class="legend">
+      <span>■ depot</span><span style="color:#4f9cff">● simulated need</span><span style="color:#f0a020">◎ field report</span>
+      <span style="color:#3fb950">— delivered</span><span style="color:#3fb950">- - detour</span><span style="color:#f85149">✖ blocked → healed</span>
+    </div>
+    <h2 style="margin-top:14px">Agent log</h2>
+    <div id="log"><div class="muted">Submit a field report or train the agent.</div></div>
+  </section>
+
+  <section class="card">
+    <h2>Reward over episodes</h2>
+    <svg id="chart" viewBox="0 0 320 170"></svg>
+    <h2 style="margin-top:14px">Policy (bandit RL)</h2>
+    <table id="bandit"></table>
+    <h2 style="margin-top:14px">Learned lessons (memory)</h2>
+    <ul id="lessons"><li class="muted">none yet</li></ul>
+  </section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const B = { latMin: 12.95, latMax: 13.24, lngMin: 80.13, lngMax: 80.35 };
+const W = 600, H = 560;
+const px = (lat, lng) => [ (lng - B.lngMin) / (B.lngMax - B.lngMin) * W, (B.latMax - lat) / (B.latMax - B.latMin) * H ];
+const PX_PER_KM = W / ((B.lngMax - B.lngMin) * 111.32 * Math.cos(13.05 * Math.PI / 180));
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+let recBlob = null, recorder = null;
+
+function ev(cls, html) { const d = document.createElement("div"); d.className = "ev " + cls; d.innerHTML = html; $("log").appendChild(d); }
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+  return r.json();
+}
+
+function drawMap(res) {
+  const depots = Object.fromEntries(res.initial.depots.map(d => [d.id, d]));
+  const needs = Object.fromEntries(res.initial.needs.map(n => [n.id, n]));
+  let s = "";
+  for (const h of res.hazards) {
+    const [x, y] = px(h.lat, h.lng);
+    s += `<circle cx="${x}" cy="${y}" r="${h.radius_km * PX_PER_KM}" fill="#f8514933" stroke="#f85149"/>
+          <text x="${x + 6}" y="${y - 6}" fill="#f85149" font-size="10">${esc(h.label)}</text>`;
+  }
+  for (const t of res.trace) for (const b of t.info.blocked) {
+    const [x1, y1] = px(depots[b.depot_id].lat, depots[b.depot_id].lng), [x2, y2] = px(needs[b.need_id].lat, needs[b.need_id].lng);
+    s += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#f85149" stroke-dasharray="2 4"/>
+          <text x="${(x1 + x2) / 2 - 5}" y="${(y1 + y2) / 2 + 5}" fill="#f85149" font-size="16">✖</text>`;
+  }
+  for (const d of res.deliveries) {
+    const [x1, y1] = px(depots[d.depot_id].lat, depots[d.depot_id].lng), [x2, y2] = px(needs[d.need_id].lat, needs[d.need_id].lng);
+    s += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#3fb950" stroke-width="2" ${d.detour ? 'stroke-dasharray="7 5"' : ""}/>`;
+  }
+  for (const n of Object.values(needs)) {
+    const [x, y] = px(n.lat, n.lng), field = n.source === "field", unmet = res.unmet.includes(n.id);
+    s += `<circle cx="${x}" cy="${y}" r="${4 + n.urgency * 1.5}" fill="${field ? "#f0a020" : "#4f9cff"}" ${unmet ? 'stroke="#f85149" stroke-width="3"' : ""}/>
+          <text x="${x + 9}" y="${y + 4}" fill="#e6edf3" font-size="10">${n.id} ${esc(n.zone)} · ${n.requested} ${n.item} · U${n.urgency}</text>`;
+  }
+  for (const d of Object.values(depots)) {
+    const [x, y] = px(d.lat, d.lng);
+    s += `<rect x="${x - 7}" y="${y - 7}" width="14" height="14" fill="#e6edf3"/>
+          <text x="${x + 10}" y="${y - 8}" fill="#e6edf3" font-size="11" font-weight="700">${d.id} ${esc(d.name)}</text>`;
+  }
+  $("map").innerHTML = s;
+}
+
+function renderMemory(mem) {
+  const eps = mem.episodes.slice(-40);
+  let s = `<line x1="30" y1="150" x2="315" y2="150" stroke="#2a3542"/>`;
+  if (eps.length) {
+    const vals = eps.map(e => e.reward), lo = Math.min(...vals, 0), hi = Math.max(...vals, 1);
+    const X = i => 30 + (eps.length === 1 ? 140 : i * 285 / (eps.length - 1)), Y = v => 150 - (v - lo) / (hi - lo || 1) * 135;
+    const avg = vals.map((_, i) => { const w = vals.slice(Math.max(0, i - 4), i + 1); return w.reduce((a, b) => a + b, 0) / w.length; });
+    s += `<polyline fill="none" stroke="#4f9cff66" points="${vals.map((v, i) => X(i) + "," + Y(v)).join(" ")}"/>`;
+    s += `<polyline fill="none" stroke="#3fb950" stroke-width="2.5" points="${avg.map((v, i) => X(i) + "," + Y(v)).join(" ")}"/>`;
+    s += `<text x="2" y="18" fill="#8b98a5" font-size="10">${hi.toFixed(0)}</text><text x="2" y="150" fill="#8b98a5" font-size="10">${lo.toFixed(0)}</text>`;
+    s += `<text x="180" y="165" fill="#8b98a5" font-size="10">episodes · green = moving avg</text>`;
+  } else s += `<text x="80" y="85" fill="#8b98a5" font-size="12">no episodes yet</text>`;
+  $("chart").innerHTML = s;
+  $("bandit").innerHTML = "<tr><th>strategy</th><th>runs</th><th>avg reward</th></tr>" +
+    Object.entries(mem.bandit).map(([k, v]) => `<tr><td>${k}</td><td>${v.n}</td><td>${v.mean}</td></tr>`).join("");
+  $("lessons").innerHTML = mem.lessons.length ? mem.lessons.map(l => `<li>${esc(l)}</li>`).join("") : '<li class="muted">none yet</li>';
+}
+
+function renderEpisode(res) {
+  $("log").innerHTML = "";
+  if (res.intake) {
+    ev("info", `<b>Intake</b> (${esc(res.intake.language)}): ${esc(res.intake.summary)}<br>` +
+      res.intake.needs.map(n => `• ${esc(n.zone)}: ${n.qty} ${n.item}, urgency ${n.urgency} <span class="muted">${esc(n.evidence)}</span>`).join("<br>") +
+      (res.intake.hazards.length ? "<br>⚠ hazards: " + res.intake.hazards.map(h => esc(h.label)).join(", ") : ""));
+  }
+  for (const t of res.trace) {
+    ev(t.info.blocked.length ? "bad" : "ok", `<b>Step ${t.step}</b> · ${esc(t.strategy)} · reward ${t.reward}<br><span class="muted">${esc(t.reasoning)}</span><br>` +
+      t.info.delivered.map(d => `✔ ${d.need_id} ← ${d.depot_id}: ${d.qty} ${d.item}, ${d.km} km${d.detour ? " (detour)" : ""}` +
+        (d.eta ? ` · <b>${d.eta.minutes} min via ${d.eta.source}</b>` : "")).join("<br>") +
+      t.info.blocked.map(b => `<br>✖ ${b.need_id} ← ${b.depot_id} blocked by ${b.hazards.join(",")}`).join(""));
+  }
+  for (const h of res.heals) ev("heal", "🩹 " + esc(h));
+  ev(res.unmet.length ? "bad" : "ok", `<b>Episode reward ${res.total_reward}</b> · unmet: ${res.unmet.join(", ") || "none"}`);
+  for (const l of res.new_lessons) ev("info", "🧠 learned: " + esc(l));
+  drawMap(res);
+}
+
+$("go").onclick = async () => {
+  const fd = new FormData();
+  fd.append("text", $("text").value);
+  fd.append("chaos", $("chaos").checked);
+  if ($("image").files[0]) fd.append("image", $("image").files[0]);
+  if ($("audio").files[0]) fd.append("audio", $("audio").files[0]);
+  else if (recBlob) fd.append("audio", recBlob, "voice.webm");
+  $("go").disabled = true; $("go").textContent = "Agent working…";
+  try { renderEpisode(await api("/api/dispatch", { method: "POST", body: fd })); renderMemory(await api("/api/memory")); }
+  catch (e) { ev("bad", "Error: " + esc(e.message)); }
+  finally { $("go").disabled = false; $("go").textContent = "Dispatch relief →"; }
+};
+
+$("train").onclick = async () => {
+  $("train").disabled = true; $("train").textContent = "Training…";
+  try {
+    const r = await api("/api/train", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ episodes: 5, chaos: true }) });
+    $("log").innerHTML = "";
+    r.episodes.forEach((e, i) => ev(e.reward >= 0 ? "ok" : "bad", `Episode ${i + 1}: <b>${e.strategy}</b> → reward ${e.reward} · ${e.heals} self-heal events`));
+    renderMemory(r.memory);
+  } catch (e) { ev("bad", "Error: " + esc(e.message)); }
+  finally { $("train").disabled = false; $("train").textContent = "Train 5 episodes"; }
+};
+
+$("reset").onclick = async () => renderMemory(await api("/api/memory/reset", { method: "POST" }));
+
+$("rec").onclick = async () => {
+  if (recorder && recorder.state === "recording") { recorder.stop(); return; }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const chunks = []; recorder = new MediaRecorder(stream);
+    recorder.ondataavailable = e => chunks.push(e.data);
+    recorder.onstop = () => { recBlob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" }); stream.getTracks().forEach(t => t.stop());
+      $("rec").textContent = "● Record"; $("recState").textContent = `recorded ${(recBlob.size / 1024).toFixed(0)} KB`; };
+    recorder.start(); $("rec").textContent = "■ Stop"; $("recState").textContent = "recording…";
+  } catch (e) { $("recState").textContent = "mic unavailable"; }
+};
+
+api("/healthz").then(h => $("badge").textContent = h.llm ? "Gemini online · " + h.models[0] : "offline mode (no API key)").catch(() => $("badge").textContent = "server unreachable");
+api("/api/memory").then(renderMemory).catch(() => {});
+</script>
+</body>
+</html>
