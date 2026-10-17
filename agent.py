@@ -182,14 +182,27 @@ def _clean_need(n):
             "urgency": urg, "evidence": str(n.get("evidence", ""))[:200]}
 
 
+ITEM_WORDS = {  # whole words only, so "underwater" is not a water request
+    "water": ["water", "drinking", "thanni", "kudineer", "paani", "pani"],
+    "food": ["food", "meals", "rice", "packets", "saapadu", "khana"],
+    "medicine": ["medicine", "medicines", "medical", "tablets", "first aid", "marundhu", "dawai"],
+    "blankets": ["blanket", "blankets", "bedsheets", "kambal", "porvai"],
+}
+
+
 def _offline_intake(text):
     t = text.lower()
-    item = next((i for i in ITEMS if i in t), "food")
+    found = []
+    for item, words in ITEM_WORDS.items():
+        hits = [m.start() for w in words for m in re.finditer(rf"\b{re.escape(w)}\b", t)]
+        if hits:
+            found.append((min(hits), item))
+    items = [i for _, i in sorted(found)] or ["food"]
     m = re.search(r"\d+", t)
     zone = next((z for z, _, _ in ZONES if z.lower() in t), "T Nagar")
-    urgent = any(w in t for w in ("urgent", "trapped", "injured", "emergency", "children"))
+    urgent = any(w in t for w in ("urgent", "trapped", "injured", "emergency", "children", "stranded"))
     needs = [{"zone": zone, "item": item, "qty": int(m.group(0)) if m else 50, "urgency": 5 if urgent else 3,
-              "evidence": "keyword parse (offline)"}] if t.strip() else []
+              "evidence": "keyword rules (AI unavailable)"} for item in items] if t.strip() else []
     return {"summary": text[:120] or "No text report", "language": "unknown", "needs": needs, "hazards": []}
 
 
@@ -217,6 +230,13 @@ def intake(text="", image=None, audio=None, heals=None):
 
 
 # ---- planning ---------------------------------------------------------------
+STRATEGY_NOTES = {
+    "urgency_first": "Most urgent first; nearest depot with enough stock; detour around reported floods.",
+    "nearest_first": "Arrival order; nearest depot with enough stock; detour around reported floods.",
+    "fifo": "Arrival order; first depot with any stock; ignores flood reports.",
+}
+
+
 def heuristic_plan(obs, strategy):
     stock = {d["id"]: dict(d["stock"]) for d in obs["depots"]}
     needs = obs["pending_needs"]
@@ -343,10 +363,10 @@ def run_episode(seed=None, extra_needs=None, extra_hazards=None, chaos=True, str
             if strategy == "llm":
                 action, why = llm_plan(obs, mem["lessons"], heals)
             else:
-                action, why = heuristic_plan(obs, strategy), f"{strategy} policy"
+                action, why = heuristic_plan(obs, strategy), STRATEGY_NOTES[strategy]
         except Exception as e:
             heals.append(f"Planner crashed ({str(e)[:80]}) -> urgency_first fallback")
-            action, why = heuristic_plan(obs, "urgency_first"), "fallback policy"
+            action, why = heuristic_plan(obs, "urgency_first"), "Fallback: " + STRATEGY_NOTES["urgency_first"]
         res = env.step({"assignments": action})
         info = res["info"]
         for h in info["new_hazards"]:

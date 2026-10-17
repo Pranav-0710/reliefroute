@@ -4,224 +4,360 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ReliefRoute</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🚚</text></svg>">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%23111315'/><path d='M8 23 L15 14 L24 9' stroke='%235fb37f' stroke-width='3' fill='none' stroke-linecap='round'/><circle cx='24' cy='9' r='3.2' fill='%23e3a33b'/></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
-  :root { --bg:#0f1419; --panel:#182029; --line:#2a3542; --text:#e6edf3; --muted:#8b98a5;
-          --accent:#4f9cff; --ok:#3fb950; --warn:#f0a020; --bad:#f85149; }
+  :root {
+    --bg:#0f1113; --panel:#16191c; --line:#24282d; --line-2:#323840;
+    --text:#e7e5e2; --muted:#8b9199; --faint:#5c626a;
+    --blue:#7a9cc6; --amber:#e3a33b; --red:#e0574f; --green:#5fb37f; --map:#0b0d0f;
+    --mono:"IBM Plex Mono", ui-monospace, Consolas, monospace;
+    --sans:"IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
   * { box-sizing:border-box; }
-  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 system-ui, sans-serif; }
-  header { padding:14px 20px; border-bottom:1px solid var(--line); display:flex; gap:12px; align-items:baseline; flex-wrap:wrap; }
-  header h1 { margin:0; font-size:20px; }
-  header span { color:var(--muted); }
-  .pill { padding:2px 10px; border-radius:99px; border:1px solid var(--line); font-size:12px; color:var(--text); }
-  #badge { margin-left:auto; }
-  main { display:grid; grid-template-columns: 340px 1fr 340px; gap:14px; padding:14px; }
-  @media (max-width: 1100px) { main { grid-template-columns: 1fr; } }
-  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px; min-width:0; }
-  .card h2 { margin:0 0 10px; font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); }
-  textarea { width:100%; min-height:110px; background:var(--bg); color:var(--text); border:1px solid var(--line); border-radius:8px; padding:8px; font:inherit; }
-  label { display:block; margin:10px 0 4px; color:var(--muted); font-size:12px; }
-  input[type=file] { width:100%; color:var(--muted); }
-  button { background:var(--accent); color:#fff; border:0; border-radius:8px; padding:9px 14px; font-weight:600; cursor:pointer; }
-  button.secondary { background:transparent; border:1px solid var(--line); color:var(--text); }
-  button:disabled { opacity:.5; cursor:wait; }
-  .chips { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:8px; }
-  .chip { background:transparent; border:1px solid var(--line); color:var(--text); padding:4px 10px; font-size:12px; font-weight:500; border-radius:99px; }
-  .chip:hover { border-color:var(--accent); }
+  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.5 var(--sans); -webkit-font-smoothing:antialiased; }
+  button, input, textarea { font:inherit; color:inherit; }
+
+  header { display:flex; align-items:center; gap:16px; padding:12px 20px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  .brand { display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; }
+  .brand b { font-size:16px; font-weight:600; letter-spacing:-.01em; }
+  .brand span { color:var(--muted); font-size:13px; }
+  .status { margin-left:auto; display:flex; gap:18px; font:12px var(--mono); color:var(--muted); flex-wrap:wrap; }
+  .dot { display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--faint); margin-right:7px; vertical-align:1px; }
+  .dot.ok { background:var(--green); } .dot.warn { background:var(--amber); } .dot.bad { background:var(--red); }
+
+  main { display:grid; grid-template-columns:320px minmax(0,1fr) 320px; gap:1px; background:var(--line); min-height:calc(100vh - 49px); }
+  @media (max-width:1150px) { main { grid-template-columns:1fr; } }
+  section { background:var(--bg); padding:18px 20px; min-width:0; }
+  h2 { font:500 11px var(--mono); letter-spacing:.08em; text-transform:uppercase; color:var(--muted); margin:0 0 10px; }
+  .block + .block { margin-top:22px; padding-top:20px; border-top:1px solid var(--line); }
+  .hint { color:var(--muted); font-size:12.5px; margin:0; }
+
+  .samples { display:flex; gap:4px; flex-wrap:wrap; align-items:center; margin-bottom:8px; font-size:12px; color:var(--muted); }
+  .samples span { width:100%; font-size:11.5px; }
+  .tab { background:none; border:1px solid var(--line); padding:2px 9px; border-radius:4px; font-size:12px; cursor:pointer; }
+  .tab:hover { border-color:var(--line-2); background:var(--panel); }
+  textarea { width:100%; min-height:120px; resize:vertical; background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:10px; line-height:1.45; }
+  textarea:focus { outline:none; border-color:var(--blue); }
+
+  .btn { display:inline-flex; align-items:center; gap:6px; background:transparent; border:1px solid var(--line-2); border-radius:6px; padding:6px 11px; font-size:13px; cursor:pointer; }
+  .btn:hover { background:var(--panel); }
+  .btn.primary { width:100%; justify-content:center; background:var(--text); color:#121416; border-color:var(--text); padding:10px; font-weight:600; }
+  .btn.primary:hover { background:#fff; }
+  .btn:disabled { opacity:.5; cursor:progress; }
+  .btn .rec { width:8px; height:8px; border-radius:50%; background:var(--red); }
   .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:10px; }
-  .pipe { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:10px; }
-  .pipe span { padding:3px 10px; border-radius:99px; border:1px solid var(--line); color:var(--muted); font-size:12px; transition:all .25s; }
-  .pipe span.on { background:var(--accent); border-color:var(--accent); color:#fff; }
-  .pipe span.heal.on { background:var(--warn); border-color:var(--warn); }
-  .pipe span.learn.on { background:var(--ok); border-color:var(--ok); }
-  .pipe.busy span { animation:pulse 1.2s infinite; }
+  #attached { font:12px var(--mono); color:var(--muted); margin-top:6px; min-height:18px; }
+  #attached a { color:var(--muted); margin-left:6px; cursor:pointer; text-decoration:underline; }
+  .check { display:flex; gap:8px; align-items:flex-start; font-size:13px; margin:14px 0; cursor:pointer; }
+  .check input { margin-top:3px; accent-color:var(--amber); }
+
+  .pipe { display:grid; grid-template-columns:repeat(auto-fit, minmax(76px, 1fr)); gap:4px; margin-bottom:18px; }
+  .pipe div { border-top:3px solid var(--line-2); padding-top:6px; font-size:12px; color:var(--faint); transition:color .2s, border-color .2s; }
+  .pipe div i { font:normal 11px var(--mono); margin-right:4px; }
+  .pipe div.on { border-color:var(--blue); color:var(--text); }
+  .pipe div.on.heal { border-color:var(--amber); } .pipe div.on.learn { border-color:var(--green); }
+  .pipe.busy div { animation:pulse 1.4s ease-in-out infinite; }
   @keyframes pulse { 50% { opacity:.35; } }
-  svg { width:100%; height:auto; background:#0b1016; border-radius:8px; }
-  #log { max-height:430px; overflow:auto; font-size:13px; }
-  .ev { padding:6px 8px; border-left:3px solid var(--line); margin:4px 0; background:#121a22; border-radius:4px; }
-  .ev.heal { border-color:var(--warn); } .ev.ok { border-color:var(--ok); } .ev.bad { border-color:var(--bad); } .ev.info { border-color:var(--accent); }
-  table { width:100%; border-collapse:collapse; font-size:13px; } td, th { padding:4px; border-bottom:1px solid var(--line); text-align:left; }
-  tr.best td { color:var(--ok); font-weight:600; }
-  ul { padding-left:18px; margin:6px 0; } .muted { color:var(--muted); }
-  #trend { margin-top:6px; font-size:13px; }
-  .legend { display:flex; gap:12px; flex-wrap:wrap; font-size:12px; color:var(--muted); margin-top:8px; }
+
+  .maphead { display:flex; justify-content:space-between; align-items:baseline; gap:12px; flex-wrap:wrap; }
+  .legend { display:flex; gap:12px; flex-wrap:wrap; font-size:11.5px; color:var(--muted); margin-bottom:8px; }
+  .legend svg { vertical-align:-2px; margin-right:4px; }
+  .map { border:1px solid var(--line); border-radius:6px; overflow:hidden; background:var(--map); }
+  .map svg { display:block; width:100%; height:auto; }
+
+  .log { max-height:380px; overflow:auto; border:1px solid var(--line); border-radius:6px; }
+  .ev { display:grid; grid-template-columns:82px 1fr; gap:10px; padding:8px 12px; border-bottom:1px solid var(--line); font-size:13px; }
+  .ev:last-child { border-bottom:0; }
+  .ev .sub { color:var(--muted); }
+  .tag { font:500 10.5px var(--mono); letter-spacing:.06em; padding-top:2px; color:var(--muted); }
+  .tag.intake { color:var(--blue); } .tag.alert, .tag.bad { color:var(--red); } .tag.heal { color:var(--amber); }
+  .tag.good, .tag.lesson { color:var(--green); }
+  .empty { padding:14px 12px; color:var(--muted); font-size:13px; }
+  .num, td.n { font-family:var(--mono); }
+
+  .kpis { display:grid; grid-template-columns:1fr 1fr; gap:1px; background:var(--line); border:1px solid var(--line); border-radius:6px; overflow:hidden; margin-bottom:18px; }
+  .kpi { background:var(--bg); padding:10px 12px; }
+  .kpi b { display:block; font:500 22px/1.2 var(--mono); letter-spacing:-.02em; }
+  .kpi span { font-size:11.5px; color:var(--muted); }
+  .up { color:var(--green); } .down { color:var(--amber); }
+  .chart { border:1px solid var(--line); border-radius:6px; background:var(--map); }
+  .chart svg { display:block; width:100%; height:auto; }
+  .pol { display:grid; grid-template-columns:104px 1fr 42px 26px; gap:8px; align-items:center; font-size:12.5px; padding:5px 0; border-bottom:1px solid var(--line); }
+  .pol .name { font-family:var(--mono); }
+  .pol .bar { height:6px; background:var(--panel); border-radius:3px; overflow:hidden; }
+  .pol .bar i { display:block; height:100%; background:var(--line-2); }
+  .pol.best .name { color:var(--green); } .pol.best .bar i { background:var(--green); }
+  .pol .runs { color:var(--muted); text-align:right; font-family:var(--mono); }
+  .polhead { color:var(--faint); font-size:11px; border-bottom:1px solid var(--line); }
+  ol.lessons { margin:0; padding-left:20px; font-size:13px; }
+  ol.lessons li { margin:6px 0; } ol.lessons li::marker { font-family:var(--mono); color:var(--faint); }
 </style>
 </head>
 <body>
 <header>
-  <h1>🚚 ReliefRoute</h1>
-  <span>Multimodal, self-healing, self-learning flood-relief logistics agent · Gemini + Google Maps</span>
-  <span class="pill" title="MCP Streamable HTTP endpoint exposing the agent's tools">MCP · /mcp</span>
-  <div id="badge" class="pill">checking…</div>
+  <div class="brand"><b>ReliefRoute</b><span>Flood-relief dispatch agent · Chennai</span></div>
+  <div class="status">
+    <span id="ai"><span class="dot"></span>Gemini · checking</span>
+    <span title="MCP Streamable HTTP endpoint exposing the agent's tools"><span class="dot ok"></span>MCP /mcp</span>
+  </div>
 </header>
 <main>
-  <section class="card">
-    <h2>1 · Field report (any language)</h2>
-    <div class="chips">
-      <button class="chip" data-t="Velachery la 120 families maadila maatikittaanga, kudika thanni and medicine urgent-a venum. Saidapet bridge road flooded.">Tanglish</button>
-      <button class="chip" data-t="அடையாறு பகுதியில் 200 பேருக்கு குடிநீர் தேவை. மருத்துவமனையில் மருந்துகள் தீர்ந்துவிட்டன, அவசரம்!">தமிழ்</button>
-      <button class="chip" data-t="पेरम्बूर में 80 लोग फंसे हैं, खाना और कंबल चाहिए। बच्चे और बुज़ुर्ग भी हैं, जल्दी भेजिए।">हिन्दी</button>
-      <button class="chip" data-t="Royapuram relief camp: 150 people need food packets and blankets tonight. Ennore road is underwater.">English</button>
+  <section>
+    <div class="block">
+      <h2>Field report</h2>
+      <div class="samples"><span>Try a sample report</span>
+        <button class="tab" data-t="Velachery la 120 families maadila maatikittaanga, kudika thanni and medicine urgent-a venum. Saidapet bridge road flooded.">Tanglish</button>
+        <button class="tab" data-t="அடையாறு பகுதியில் 200 பேருக்கு குடிநீர் தேவை. மருத்துவமனையில் மருந்துகள் தீர்ந்துவிட்டன, அவசரம்!">Tamil</button>
+        <button class="tab" data-t="पेरम्बूर में 80 लोग फंसे हैं, खाना और कंबल चाहिए। बच्चे और बुज़ुर्ग भी हैं, जल्दी भेजिए।">Hindi</button>
+        <button class="tab" data-t="Royapuram relief camp: 150 people need food packets and blankets tonight. Ennore road is underwater.">English</button>
+      </div>
+      <textarea id="text" placeholder="Type or paste a report in any language. You can also attach a photo or a voice note."></textarea>
+      <div class="row">
+        <label class="btn"><input type="file" id="image" accept="image/*" hidden>Photo</label>
+        <label class="btn"><input type="file" id="audio" accept="audio/*" hidden>Audio file</label>
+        <button class="btn" id="rec" type="button">Record</button>
+      </div>
+      <div id="attached"></div>
+      <label class="check"><input type="checkbox" id="chaos" checked><span>Simulate a road collapse during delivery<br><span class="hint">Tests whether the agent detects the failure and reroutes.</span></span></label>
+      <button class="btn primary" id="go">Dispatch</button>
     </div>
-    <textarea id="text" placeholder="e.g. Velachery: 120 families stranded on rooftops, need drinking water and medicine urgently. Road near Saidapet bridge is flooded."></textarea>
-    <label>📷 Photo (flooded road, handwritten need list, warehouse)</label>
-    <input type="file" id="image" accept="image/*">
-    <label>🎙️ Voice note (upload or record)</label>
-    <input type="file" id="audio" accept="audio/*">
-    <div class="row">
-      <button class="secondary" id="rec">● Record</button><span id="recState" class="muted"></span>
-    </div>
-    <div class="row">
-      <label style="margin:0"><input type="checkbox" id="chaos" checked> 🌊 Simulate live disruption</label>
-    </div>
-    <div class="row"><button id="go">Dispatch relief →</button></div>
-    <hr style="border-color:var(--line); margin:16px 0">
-    <h2>2 · Self-learning (simulator)</h2>
-    <p class="muted" style="margin:0">Agent plays random disaster episodes in the OpenEnv-style simulator, scores itself, reflects and improves its policy.</p>
-    <div class="row">
-      <button id="train">Train 5 episodes</button>
-      <button class="secondary" id="reset">Reset memory</button>
+    <div class="block">
+      <h2>Training</h2>
+      <p class="hint">Plays simulated flood scenarios (OpenEnv-style reset / step). Every run is scored; the policy and the lesson memory update.</p>
+      <div class="row">
+        <button class="btn" id="train">Run 5 episodes</button>
+        <button class="btn" id="reset">Reset memory</button>
+      </div>
     </div>
   </section>
 
-  <section class="card">
-    <h2>Agent pipeline</h2>
+  <section>
+    <h2>Pipeline</h2>
     <div class="pipe" id="pipe">
-      <span>1 Understand</span><span>2 Plan</span><span>3 Dispatch</span><span>4 Disruption</span>
-      <span class="heal">5 Self-heal</span><span>6 Score</span><span class="learn">7 Learn</span>
+      <div><i>1</i>Understand</div><div><i>2</i>Plan</div><div><i>3</i>Dispatch</div><div><i>4</i>Disruption</div>
+      <div class="heal"><i>5</i>Self-heal</div><div><i>6</i>Score</div><div class="learn"><i>7</i>Learn</div>
     </div>
-    <h2>Live operations map · Chennai</h2>
-    <svg id="map" viewBox="0 0 600 560"></svg>
-    <div class="legend">
-      <span>■ depot</span><span style="color:#4f9cff">● simulated need</span><span style="color:#f0a020">◎ field report</span>
-      <span style="color:#3fb950">— delivered</span><span style="color:#3fb950">- - detour</span><span style="color:#f85149">✖ blocked → healed</span>
+    <div class="maphead">
+      <h2>Operations map</h2>
+      <div class="legend">
+        <span><svg width="10" height="10"><rect width="10" height="10" fill="#e7e5e2"/></svg>Depot</span>
+        <span><svg width="10" height="10"><circle cx="5" cy="5" r="4" fill="#7a9cc6"/></svg>Open request</span>
+        <span><svg width="10" height="10"><circle cx="5" cy="5" r="4" fill="#e3a33b"/></svg>Field report</span>
+        <span><svg width="18" height="6"><line x1="0" y1="3" x2="18" y2="3" stroke="#5fb37f" stroke-width="2"/></svg>Delivered</span>
+        <span><svg width="18" height="6"><line x1="0" y1="3" x2="18" y2="3" stroke="#5fb37f" stroke-width="2" stroke-dasharray="5 3"/></svg>Detour</span>
+        <span><svg width="18" height="6"><line x1="0" y1="3" x2="18" y2="3" stroke="#e0574f" stroke-width="2" stroke-dasharray="2 3"/></svg>Blocked</span>
+        <span><svg width="10" height="10"><circle cx="5" cy="5" r="4.5" fill="#e0574f33" stroke="#e0574f"/></svg>Flooded</span>
+      </div>
     </div>
-    <h2 style="margin-top:14px">Agent log</h2>
-    <div id="log"><div class="muted">Pick a sample report and press Dispatch, or train the agent.</div></div>
+    <div class="map"><svg id="map" viewBox="0 0 600 560" role="img" aria-label="Map of Chennai with depots, requests and routes"></svg></div>
+    <h2 style="margin-top:18px">Event log</h2>
+    <div class="log" id="log"><div class="empty">No activity yet. Choose a sample report and dispatch, or run training.</div></div>
   </section>
 
-  <section class="card">
-    <h2>Score over episodes (%)</h2>
-    <svg id="chart" viewBox="0 0 320 170"></svg>
-    <div id="trend" class="muted"></div>
-    <h2 style="margin-top:14px">Policy (bandit RL)</h2>
-    <table id="bandit"></table>
-    <h2 style="margin-top:14px">Learned lessons (memory)</h2>
-    <ul id="lessons"><li class="muted">none yet</li></ul>
+  <section>
+    <div class="block">
+      <h2>Performance</h2>
+      <div class="kpis">
+        <div class="kpi"><b id="k-last">–</b><span>Last score</span></div>
+        <div class="kpi"><b id="k-avg">–</b><span>Average, last 5</span></div>
+        <div class="kpi"><b id="k-eps">0</b><span>Episodes</span></div>
+        <div class="kpi"><b id="k-delta">–</b><span>Change vs first 5</span></div>
+      </div>
+      <div class="chart"><svg id="chart" viewBox="0 0 320 150" role="img" aria-label="Score per episode"></svg></div>
+      <p class="hint" style="margin-top:6px">Score = share of the best possible outcome. Dots: each episode. Line: 5-episode average.</p>
+    </div>
+    <div class="block">
+      <h2>Policy · bandit</h2>
+      <div id="bandit"></div>
+      <p class="hint" style="margin-top:8px">Mostly uses the best-scoring strategy, tries the others 20% of the time.</p>
+    </div>
+    <div class="block">
+      <h2>Lessons in memory</h2>
+      <ol class="lessons" id="lessons"></ol>
+    </div>
   </section>
 </main>
 <script>
 const $ = id => document.getElementById(id);
 const B = { latMin: 12.95, latMax: 13.24, lngMin: 80.13, lngMax: 80.35 };
 const W = 600, H = 560;
-const px = (lat, lng) => [ (lng - B.lngMin) / (B.lngMax - B.lngMin) * W, (B.latMax - lat) / (B.latMax - B.latMin) * H ];
+const px = (lat, lng) => [(lng - B.lngMin) / (B.lngMax - B.lngMin) * W, (B.latMax - lat) / (B.latMax - B.latMin) * H];
 const PX_PER_KM = W / ((B.lngMax - B.lngMin) * 111.32 * Math.cos(13.05 * Math.PI / 180));
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+const mean = a => a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0;
 const MEM_KEY = "reliefroute-memory";
-let recBlob = null, recorder = null, localMem = null;
+const C = { text: "#e7e5e2", muted: "#8b9199", faint: "#3a4047", blue: "#7a9cc6", amber: "#e3a33b", red: "#e0574f", green: "#5fb37f", map: "#0b0d0f" };
+let recBlob = null, recorder = null, localMem = null, aiModel = "", aiLevel = 0;
 try { localMem = JSON.parse(localStorage.getItem(MEM_KEY)); } catch { localMem = null; }
 
-function ev(cls, html) { const d = document.createElement("div"); d.className = "ev " + cls; d.innerHTML = html; $("log").appendChild(d); }
+// ---- static geography (approximate) -------------------------------------------
+const COAST = [[13.24, 80.335], [13.215, 80.325], [13.16, 80.306], [13.12, 80.298], [13.09, 80.293], [13.06, 80.285],
+  [13.03, 80.28], [13.0, 80.273], [12.97, 80.263], [12.95, 80.257]];
+const RIVERS = [
+  ["Cooum", [[13.075, 80.13], [13.07, 80.19], [13.076, 80.235], [13.07, 80.26], [13.068, 80.284]]],
+  ["Adyar", [[13.0, 80.13], [13.01, 80.18], [13.02, 80.22], [13.012, 80.25], [13.013, 80.274]]],
+];
+const ZONES = [["Velachery", 12.9815, 80.2180], ["Saidapet", 13.0213, 80.2231], ["T Nagar", 13.0418, 80.2341],
+  ["Mylapore", 13.0368, 80.2676], ["Perambur", 13.1180, 80.2330], ["Royapuram", 13.1137, 80.2954], ["Adyar", 13.0012, 80.2565],
+  ["Kodambakkam", 13.0521, 80.2255], ["Ennore", 13.2146, 80.3203], ["Porur", 13.0382, 80.1565]];
+const pts = list => list.map(([la, lo]) => px(la, lo).map(v => v.toFixed(1)).join(",")).join(" ");
+const label = (x, y, t, fill, size = 10, extra = "") =>
+  `<text x="${x}" y="${y}" fill="${fill}" font-size="${size}" font-family="IBM Plex Sans, sans-serif" paint-order="stroke" stroke="${C.map}" stroke-width="3" ${extra}>${t}</text>`;
 
-async function api(path, opts) {
-  const r = await fetch(path, opts);
-  if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
-  return r.json();
-}
-
-// ---- pipeline bar --------------------------------------------------------
-function pipeBusy() { $("pipe").classList.add("busy"); [...$("pipe").children].forEach(s => s.classList.remove("on")); }
-async function pipeRun(healed) {
-  $("pipe").classList.remove("busy");
-  for (const [i, s] of [...$("pipe").children].entries()) {
-    if ((i === 3 || i === 4) && !healed) continue;  // no disruption this run
-    s.classList.add("on"); await sleep(300);
+function baseMap() {
+  let s = "";
+  for (let i = 1; i < 6; i++) s += `<line x1="${i * 100}" y1="0" x2="${i * 100}" y2="${H}" stroke="#14171a"/><line x1="0" y1="${i * 100}" x2="${W}" y2="${i * 100}" stroke="#14171a"/>`;
+  s += `<polygon points="${pts([...COAST, [12.95, 80.36], [13.24, 80.36]])}" fill="#10161d"/>`;
+  s += `<polyline points="${pts(COAST)}" fill="none" stroke="#28323d" stroke-width="1.5"/>`;
+  s += label(530, 300, "Bay of Bengal", "#3d4a58", 11, 'font-style="italic" text-anchor="middle"');
+  for (const [name, line] of RIVERS) {
+    s += `<polyline points="${pts(line)}" fill="none" stroke="#1d2c3a" stroke-width="2.5" stroke-linecap="round"/>`;
+    const [x, y] = px(...line[1]); s += label(x, y - 6, name, "#3d4a58", 9.5, 'font-style="italic"');
   }
+  for (const [name, la, lo] of ZONES) { const [x, y] = px(la, lo); s += label(x - 4, y + 18, name.toUpperCase(), "#4a525b", 8.5, 'letter-spacing=".08em"'); }
+  const km5 = 5 * PX_PER_KM;
+  s += `<line x1="16" y1="${H - 16}" x2="${16 + km5}" y2="${H - 16}" stroke="${C.muted}" stroke-width="1.5"/><line x1="16" y1="${H - 20}" x2="16" y2="${H - 12}" stroke="${C.muted}"/><line x1="${16 + km5}" y1="${H - 20}" x2="${16 + km5}" y2="${H - 12}" stroke="${C.muted}"/>`;
+  s += label(16, H - 24, "5 km", C.muted, 10, 'font-family="IBM Plex Mono, monospace"');
+  return s;
 }
 
-// ---- map -----------------------------------------------------------------
 function drawMap(res) {
   const depots = Object.fromEntries(res.initial.depots.map(d => [d.id, d]));
   const needs = Object.fromEntries(res.initial.needs.map(n => [n.id, n]));
-  let s = "";
+  const at = o => px(o.lat, o.lng);
+  let s = baseMap();
   for (const h of res.hazards) {
-    const [x, y] = px(h.lat, h.lng);
-    s += `<circle cx="${x}" cy="${y}" r="${h.radius_km * PX_PER_KM}" fill="#f8514933" stroke="#f85149"/>
-          <text x="${x + 6}" y="${y - 6}" fill="#f85149" font-size="10">${esc(h.label)}</text>`;
+    const [x, y] = at(h);
+    s += `<circle cx="${x}" cy="${y}" r="${h.radius_km * PX_PER_KM}" fill="${C.red}26" stroke="${C.red}" stroke-width="1"><title>${esc(h.label)}</title></circle>`;
+    s += label(x + 8, y - 8, esc(h.label), C.red, 10);
   }
   for (const t of res.trace) for (const b of t.info.blocked) {
-    const [x1, y1] = px(depots[b.depot_id].lat, depots[b.depot_id].lng), [x2, y2] = px(needs[b.need_id].lat, needs[b.need_id].lng);
-    s += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#f85149" stroke-dasharray="2 4"/>
-          <text x="${(x1 + x2) / 2 - 5}" y="${(y1 + y2) / 2 + 5}" fill="#f85149" font-size="16">✖</text>`;
+    const [x1, y1] = at(depots[b.depot_id]), [x2, y2] = at(needs[b.need_id]);
+    const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+    s += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${C.red}" stroke-width="1.5" stroke-dasharray="2 4"/>`;
+    s += `<path d="M${mx - 5} ${my - 5} L${mx + 5} ${my + 5} M${mx + 5} ${my - 5} L${mx - 5} ${my + 5}" stroke="${C.red}" stroke-width="2.5" stroke-linecap="round"/>`;
   }
   for (const d of res.deliveries) {
-    const [x1, y1] = px(depots[d.depot_id].lat, depots[d.depot_id].lng), [x2, y2] = px(needs[d.need_id].lat, needs[d.need_id].lng);
-    s += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#3fb950" stroke-width="2" ${d.detour ? 'stroke-dasharray="7 5"' : ""}/>`;
+    const [x1, y1] = at(depots[d.depot_id]), [x2, y2] = at(needs[d.need_id]);
+    s += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${C.green}" stroke-width="2" ${d.detour ? 'stroke-dasharray="7 5"' : ""}><title>${d.need_id} ← ${d.depot_id}: ${d.qty} ${d.item}, ${d.km} km${d.detour ? " (detour)" : ""}</title></line>`;
   }
   for (const n of Object.values(needs)) {
-    const [x, y] = px(n.lat, n.lng), field = n.source === "field", unmet = res.unmet.includes(n.id);
-    s += `<circle cx="${x}" cy="${y}" r="${4 + n.urgency * 1.5}" fill="${field ? "#f0a020" : "#4f9cff"}" ${unmet ? 'stroke="#f85149" stroke-width="3"' : ""}/>
-          <text x="${x + 9}" y="${y + 4}" fill="#e6edf3" font-size="10">${n.id} ${esc(n.zone)} · ${n.requested} ${n.item} · U${n.urgency}</text>`;
+    const [x, y] = at(n), field = n.source === "field", unmet = res.unmet.includes(n.id);
+    s += `<circle cx="${x}" cy="${y}" r="${3.5 + n.urgency * 1.2}" fill="${field ? C.amber : C.blue}" ${unmet ? `stroke="${C.red}" stroke-width="2.5"` : ""}><title>${n.id} ${esc(n.zone)}: ${n.requested} ${n.item}, urgency ${n.urgency}${unmet ? " (unmet)" : ""}</title></circle>`;
+    s += label(x + 10, y + 4, `${n.id}${field ? " " + esc(n.zone) : ""} · ${n.requested} ${n.item}`, field ? C.amber : "#b9c2cc", 10);
   }
   for (const d of Object.values(depots)) {
-    const [x, y] = px(d.lat, d.lng);
-    s += `<rect x="${x - 7}" y="${y - 7}" width="14" height="14" fill="#e6edf3"/>
-          <text x="${x + 10}" y="${y - 8}" fill="#e6edf3" font-size="11" font-weight="700">${d.id} ${esc(d.name)}</text>`;
+    const [x, y] = at(d), stock = Object.entries(d.stock).map(([k, v]) => `${k} ${v}`).join(", ");
+    s += `<rect x="${x - 6}" y="${y - 6}" width="12" height="12" fill="${C.text}"><title>${esc(d.name)}: ${stock}</title></rect>`;
+    s += label(x + 10, y - 7, `${d.id} ${esc(d.name)}`, C.text, 11, 'font-weight="600"');
   }
   $("map").innerHTML = s;
 }
 
-// ---- learning panel --------------------------------------------------------
+// ---- event log -------------------------------------------------------------------
+function ev(tag, cls, html) {
+  const d = document.createElement("div");
+  d.className = "ev"; d.innerHTML = `<span class="tag ${cls}">${tag}</span><div>${html}</div>`;
+  $("log").appendChild(d);
+}
+function healTag(h) {
+  if (h.startsWith("ALERT")) return ["ALERT", "alert"];
+  if (/quota|attempt \d failed/.test(h)) return ["FAILOVER", "heal"];
+  if (/Guardrail|Planner skipped/.test(h)) return ["GUARDRAIL", "heal"];
+  if (/blocked by/.test(h)) return ["REROUTE", "heal"];
+  return ["FALLBACK", "heal"];
+}
+function setAI(level, text) {  // only escalates within a session: a tripped breaker stays visible
+  if (level < aiLevel) return;
+  aiLevel = level;
+  $("ai").innerHTML = `<span class="dot ${["ok", "warn", "bad"][level]}"></span>${esc(text)}`;
+}
+function updateAI(heals) {
+  if (heals.some(h => /intake failed|Planner crashed|Reflection via Gemini failed/.test(h))) setAI(2, "AI down · rule-based backup");
+  else if (heals.some(h => /quota exhausted/.test(h))) setAI(1, "Gemini · failover model");
+}
+
+// ---- pipeline ------------------------------------------------------------------------
+function pipeBusy() { $("pipe").classList.add("busy"); [...$("pipe").children].forEach(s => s.classList.remove("on")); }
+async function pipeRun(disrupted) {
+  $("pipe").classList.remove("busy");
+  for (const [i, s] of [...$("pipe").children].entries()) {
+    if ((i === 3 || i === 4) && !disrupted) continue;
+    s.classList.add("on"); await sleep(260);
+  }
+}
+
+// ---- performance panel -----------------------------------------------------------------
 function renderMemory(mem) {
   localMem = mem;
   try { localStorage.setItem(MEM_KEY, JSON.stringify(mem)); } catch {}
-  const eps = mem.episodes.slice(-40);
-  const vals = eps.map(e => e.score ?? 0);
-  const X = i => 30 + (eps.length === 1 ? 140 : i * 285 / (eps.length - 1)), Y = v => 150 - v / 100 * 135;
-  let s = `<line x1="30" y1="150" x2="315" y2="150" stroke="#2a3542"/><line x1="30" y1="15" x2="315" y2="15" stroke="#2a3542" stroke-dasharray="2 4"/>
-           <text x="2" y="18" fill="#8b98a5" font-size="10">100%</text><text x="8" y="150" fill="#8b98a5" font-size="10">0%</text>`;
-  if (eps.length) {
-    const avg = vals.map((_, i) => { const w = vals.slice(Math.max(0, i - 4), i + 1); return w.reduce((a, b) => a + b, 0) / w.length; });
-    s += `<polyline fill="none" stroke="#4f9cff66" points="${vals.map((v, i) => X(i) + "," + Y(v)).join(" ")}"/>`;
-    s += vals.map((v, i) => `<circle cx="${X(i)}" cy="${Y(v)}" r="2.5" fill="#4f9cff"/>`).join("");
-    s += `<polyline fill="none" stroke="#3fb950" stroke-width="2.5" points="${avg.map((v, i) => X(i) + "," + Y(v)).join(" ")}"/>`;
-    s += `<text x="150" y="165" fill="#8b98a5" font-size="10">episodes · green = moving avg</text>`;
-  } else s += `<text x="80" y="85" fill="#8b98a5" font-size="12">no episodes yet</text>`;
-  $("chart").innerHTML = s;
-  const all = mem.episodes.map(e => e.score ?? 0), mean = a => a.reduce((x, y) => x + y, 0) / a.length;
+  const all = mem.episodes.map(e => e.score ?? 0);
+  $("k-last").textContent = all.length ? `${all.at(-1).toFixed(0)}%` : "–";
+  $("k-avg").textContent = all.length ? `${mean(all.slice(-5)).toFixed(0)}%` : "–";
+  $("k-eps").textContent = all.length;
   if (all.length >= 6) {
-    const first = mean(all.slice(0, 5)), last = mean(all.slice(-5)), d = last - first;
-    $("trend").innerHTML = `Avg score: first 5 runs <b>${first.toFixed(0)}%</b> → last 5 runs <b style="color:${d >= 0 ? "#3fb950" : "#f0a020"}">${last.toFixed(0)}%</b> (${d >= 0 ? "+" : ""}${d.toFixed(0)})`;
-  } else $("trend").textContent = all.length ? `${all.length} episode(s) so far: train more to see the trend` : "";
-  const tried = Object.entries(mem.bandit).filter(([, v]) => v.n);
+    const d = mean(all.slice(-5)) - mean(all.slice(0, 5));
+    $("k-delta").textContent = `${d >= 0 ? "+" : ""}${d.toFixed(0)} pts`; $("k-delta").className = d >= 0 ? "up" : "down";
+  } else { $("k-delta").textContent = "–"; $("k-delta").className = ""; }
+
+  const vals = all.slice(-40), L = 34, R = 312, T = 12, Bt = 128;
+  const X = i => L + (vals.length === 1 ? (R - L) / 2 : i * (R - L) / (vals.length - 1)), Y = v => Bt - v / 100 * (Bt - T);
+  let s = "";
+  for (const g of [0, 50, 100]) s += `<line x1="${L}" y1="${Y(g)}" x2="${R}" y2="${Y(g)}" stroke="#1d2126" ${g ? 'stroke-dasharray="2 4"' : ""}/><text x="${L - 6}" y="${Y(g) + 3}" fill="${C.muted}" font-size="9.5" font-family="IBM Plex Mono, monospace" text-anchor="end">${g}%</text>`;
+  if (vals.length) {
+    const avg = vals.map((_, i) => mean(vals.slice(Math.max(0, i - 4), i + 1)));
+    s += vals.map((v, i) => `<circle cx="${X(i)}" cy="${Y(v)}" r="2.5" fill="${C.blue}"><title>Episode ${mem.episodes.length - vals.length + i + 1}: ${v}%</title></circle>`).join("");
+    if (vals.length > 1) s += `<polyline fill="none" stroke="${C.green}" stroke-width="2" points="${avg.map((v, i) => X(i) + "," + Y(v)).join(" ")}"/>`;
+    s += `<text x="${R}" y="146" fill="${C.muted}" font-size="9.5" font-family="IBM Plex Mono, monospace" text-anchor="end">last ${vals.length} episodes</text>`;
+  } else s += `<text x="${(L + R) / 2}" y="78" fill="${C.muted}" font-size="11" text-anchor="middle" font-family="IBM Plex Sans, sans-serif">No episodes yet</text>`;
+  $("chart").innerHTML = s;
+
+  const arms = Object.entries(mem.bandit), tried = arms.filter(([, v]) => v.n);
   const best = tried.length ? tried.reduce((a, b) => (b[1].mean > a[1].mean ? b : a))[0] : null;
-  $("bandit").innerHTML = "<tr><th>strategy</th><th>runs</th><th>avg score</th></tr>" +
-    Object.entries(mem.bandit).map(([k, v]) => `<tr class="${k === best ? "best" : ""}"><td>${k === best ? "★ " : ""}${esc(k)}</td><td>${v.n}</td><td>${v.n ? v.mean.toFixed(0) + "%" : "–"}</td></tr>`).join("");
-  $("lessons").innerHTML = mem.lessons.length ? mem.lessons.map(l => `<li>${esc(l)}</li>`).join("") : '<li class="muted">none yet</li>';
+  $("bandit").innerHTML = `<div class="pol polhead"><span>strategy</span><span>avg score</span><span></span><span class="runs">runs</span></div>` +
+    arms.map(([k, v]) => `<div class="pol ${k === best ? "best" : ""}"><span class="name">${esc(k)}</span>` +
+      `<span class="bar"><i style="width:${v.n ? Math.max(0, Math.min(100, v.mean)) : 0}%"></i></span>` +
+      `<span class="num">${v.n ? v.mean.toFixed(0) + "%" : "–"}</span><span class="runs">${v.n}</span></div>`).join("");
+  $("lessons").innerHTML = mem.lessons.length ? mem.lessons.map(l => `<li>${esc(l)}</li>`).join("")
+    : `<li class="hint" style="list-style:none;margin-left:-20px">No lessons yet. Dispatch a report or run training.</li>`;
 }
 
 function renderEpisode(res) {
   $("log").innerHTML = "";
-  if (res.intake) {
-    ev("info", `<b>1 Understand</b> (${esc(res.intake.language)}): ${esc(res.intake.summary)}<br>` +
-      res.intake.needs.map(n => `• ${esc(n.zone)}: ${n.qty} ${n.item}, urgency ${n.urgency} <span class="muted">${esc(n.evidence)}</span>`).join("<br>") +
-      (res.intake.hazards.length ? "<br>⚠ hazards: " + res.intake.hazards.map(h => esc(h.label)).join(", ") : ""));
+  const it = res.intake;
+  if (it) {
+    ev("INTAKE", "intake", `${esc(it.summary)} <span class="sub">· ${esc(it.language)}</span>` +
+      it.needs.map(n => `<div class="sub num">${esc(n.zone)} · ${n.qty} ${n.item} · urgency ${n.urgency}</div>`).join("") +
+      (it.hazards.length ? `<div class="sub">Hazards: ${it.hazards.map(h => esc(h.label)).join(", ")}</div>` : ""));
   }
   for (const t of res.trace) {
-    ev(t.info.blocked.length ? "bad" : "ok", `<b>Step ${t.step}: plan + dispatch</b> · ${esc(t.strategy)} · reward ${t.reward}<br><span class="muted">${esc(t.reasoning)}</span><br>` +
-      t.info.delivered.map(d => `✔ ${d.need_id} ← ${d.depot_id}: ${d.qty} ${d.item}, ${d.km} km${d.detour ? " (detour)" : ""}` +
-        (d.eta ? ` · <b>${d.eta.minutes} min via ${d.eta.source}</b>` : "")).join("<br>") +
-      t.info.blocked.map(b => `<br>✖ ${b.need_id} ← ${b.depot_id} blocked by ${b.hazards.join(",")}`).join(""));
+    ev(`STEP ${t.step}`, t.info.blocked.length ? "bad" : "", `<span class="sub">${esc(t.strategy)}</span> · ${esc(t.reasoning)}` +
+      t.info.delivered.map(d => `<div class="sub num">${d.need_id} ← ${d.depot_id}  ${d.qty} ${d.item}  ${d.km} km${d.detour ? "  detour" : ""}` +
+        (d.eta ? `  ${d.eta.minutes} min (${d.eta.source === "google_routes" ? "Google Routes" : "estimate"})` : "") + `</div>`).join("") +
+      t.info.blocked.map(b => `<div class="num" style="color:var(--red)">${b.need_id} ← ${b.depot_id}  blocked by ${b.hazards.join(", ")}</div>`).join(""));
   }
-  for (const h of res.heals) ev("heal", "🩹 " + esc(h));
-  ev(res.unmet.length ? "bad" : "ok", `<b>6 Score: ${res.score}%</b> of best possible (reward ${res.total_reward}) · unmet: ${res.unmet.join(", ") || "none"}`);
-  for (const l of res.new_lessons) ev("info", "🧠 <b>7 Learned:</b> " + esc(l));
+  for (const h of res.heals) { const [tag, cls] = healTag(h); ev(tag, cls, esc(h.replace(/^ALERT\s*/, ""))); }
+  ev("SCORE", res.unmet.length ? "bad" : "good", `<span class="num">${res.score}%</span> of best possible <span class="sub">· reward ${res.total_reward} · unmet: ${res.unmet.join(", ") || "none"}</span>`);
+  for (const l of res.new_lessons) ev("LESSON", "lesson", esc(l));
   drawMap(res);
+  updateAI(res.heals);
 }
 
-// ---- actions ---------------------------------------------------------------
-document.querySelectorAll(".chip").forEach(c => c.onclick = () => { $("text").value = c.dataset.t; });
+// ---- actions --------------------------------------------------------------------------------
+function showAttached() {
+  const parts = [];
+  if ($("image").files[0]) parts.push(`photo: ${esc($("image").files[0].name)}`);
+  if ($("audio").files[0]) parts.push(`audio: ${esc($("audio").files[0].name)}`);
+  else if (recBlob) parts.push(`voice note: ${(recBlob.size / 1024).toFixed(0)} KB`);
+  $("attached").innerHTML = parts.length ? parts.join(" · ") + `<a id="clear">clear</a>` : "";
+  if (parts.length) $("clear").onclick = () => { $("image").value = ""; $("audio").value = ""; recBlob = null; showAttached(); };
+}
+$("image").onchange = showAttached; $("audio").onchange = showAttached;
+document.querySelectorAll(".tab").forEach(b => b.onclick = () => { $("text").value = b.dataset.t; $("text").focus(); });
 
 $("go").onclick = async () => {
   const fd = new FormData();
@@ -231,33 +367,31 @@ $("go").onclick = async () => {
   if ($("image").files[0]) fd.append("image", $("image").files[0]);
   if ($("audio").files[0]) fd.append("audio", $("audio").files[0]);
   else if (recBlob) fd.append("audio", recBlob, recBlob.type === "audio/wav" ? "voice.wav" : "voice.webm");
-  $("go").disabled = true; $("go").textContent = "Agent working…"; pipeBusy();
-  $("log").innerHTML = '<div class="muted">Gemini is reading the report, planning, handling disruptions and reflecting (30–90 s)…</div>';
+  $("go").disabled = true; $("go").textContent = "Working…"; pipeBusy();
+  $("log").innerHTML = '<div class="empty">Reading the report, planning, dispatching and reviewing the outcome…</div>';
   try {
     const res = await api("/api/dispatch", { method: "POST", body: fd });
     renderEpisode(res); renderMemory(res.memory);
-    await pipeRun(res.trace.some(t => t.info.blocked.length));
-  } catch (e) { $("pipe").classList.remove("busy"); ev("bad", "Error: " + esc(e.message)); }
-  finally { $("go").disabled = false; $("go").textContent = "Dispatch relief →"; }
+    await pipeRun(res.trace.some(t => t.info.blocked.length || t.info.new_hazards.length));
+  } catch (e) { $("pipe").classList.remove("busy"); $("log").innerHTML = ""; ev("ERROR", "bad", esc(e.message)); }
+  finally { $("go").disabled = false; $("go").textContent = "Dispatch"; }
 };
 
 $("train").onclick = async () => {
-  $("train").disabled = true;
-  $("log").innerHTML = "";
+  $("train").disabled = true; $("log").innerHTML = "";
   try {
     for (let i = 1; i <= 5; i++) {  // one episode per request: live progress, no long-request timeouts
-      $("train").textContent = `Training ${i}/5…`;
+      $("train").textContent = `Running ${i} / 5…`;
       const r = await api("/api/train", { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ episodes: 1, chaos: true, memory: localMem }) });
       const e = r.episodes[0], last = r.last;
-      ev(e.score >= 50 ? "ok" : "bad", `Episode ${i}: <b>${esc(e.strategy)}</b> → score <b>${e.score}%</b> · ${e.heals} self-heal events` +
-        last.heals.slice(0, 3).map(h => `<br><span class="muted">🩹 ${esc(h)}</span>`).join("") +
-        last.new_lessons.map(l => `<br>🧠 ${esc(l)}`).join(""));
-      drawMap(last);
-      renderMemory(r.memory);
+      ev(`EP ${r.memory.episodes.length}`, e.score >= 50 ? "good" : "bad",
+        `<span class="num">${esc(e.strategy)}</span> · score <span class="num">${e.score}%</span> <span class="sub">· ${e.heals} self-heal event${e.heals === 1 ? "" : "s"}</span>` +
+        last.new_lessons.map(l => `<div class="sub">Lesson: ${esc(l)}</div>`).join(""));
+      drawMap(last); renderMemory(r.memory); updateAI(last.heals);
     }
-  } catch (e) { ev("bad", "Error: " + esc(e.message)); }
-  finally { $("train").disabled = false; $("train").textContent = "Train 5 episodes"; }
+  } catch (e) { ev("ERROR", "bad", esc(e.message)); }
+  finally { $("train").disabled = false; $("train").textContent = "Run 5 episodes"; }
 };
 
 $("reset").onclick = async () => {
@@ -295,16 +429,25 @@ $("rec").onclick = async () => {
       stream.getTracks().forEach(t => t.stop());
       const raw = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
       try { recBlob = await toWav(raw); } catch { recBlob = raw; }
-      $("rec").textContent = "● Record"; $("recState").textContent = `recorded ${(recBlob.size / 1024).toFixed(0)} KB, ready to dispatch`;
+      $("rec").textContent = "Record"; showAttached();
     };
-    recorder.start(); $("rec").textContent = "■ Stop"; $("recState").textContent = "recording… speak your report";
-  } catch (e) { $("recState").textContent = "mic unavailable"; }
+    recorder.start(); $("rec").innerHTML = '<span class="rec"></span>Stop recording';
+  } catch { $("attached").textContent = "Microphone unavailable"; }
 };
 
-// ---- startup ---------------------------------------------------------------
-api("/healthz").then(h => $("badge").textContent = h.llm ? "Gemini online · " + h.models[0] : "offline mode (no API key)").catch(() => $("badge").textContent = "server unreachable");
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+  return r.json();
+}
+
+// ---- startup ------------------------------------------------------------------------------------
+api("/healthz").then(h => {
+  aiModel = h.models[0];
+  if (h.llm) setAI(0, `Gemini · ${aiModel}`); else setAI(2, "AI key missing · rule-based backup");
+}).catch(() => setAI(2, "Server unreachable"));
 api("/api/memory").then(m => renderMemory(localMem && localMem.episodes && localMem.episodes.length > m.episodes.length ? localMem : m)).catch(() => {});
-api("/api/scenario").then(drawMap).catch(() => {});
+api("/api/scenario").then(drawMap).catch(() => { $("map").innerHTML = baseMap(); });
 </script>
 </body>
 </html>

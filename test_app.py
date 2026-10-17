@@ -131,6 +131,10 @@ def test_offline_intake_extracts_need():
     out = agent.intake("Urgent: 120 people in Velachery need water")
     n = out["needs"][0]
     assert (n["zone"], n["item"], n["qty"], n["urgency"]) == ("Velachery", "water", 120, 5)
+    camp = agent.intake("Royapuram camp: 150 people need food packets and blankets. Ennore road is underwater.")
+    assert [n["item"] for n in camp["needs"]] == ["food", "blankets"]  # "underwater" is not a water request
+    tanglish = agent.intake("Velachery la 120 families, kudika thanni and medicine urgent-a venum")
+    assert [n["item"] for n in tanglish["needs"]] == ["water", "medicine"]
 
 
 def test_api_end_to_end():
