@@ -62,8 +62,11 @@ def test_learning_updates_memory_and_bandit_prefers_better_policy():
 
 
 def test_score_is_percentage_of_best_case():
+    for seed in range(40):  # includes split deliveries across steps
+        for strategy in ("urgency_first", "nearest_first", "fifo"):
+            r = agent.run_episode(seed=seed, chaos=True, strategy=strategy)
+            assert 0 <= r["score"] <= 100, (seed, strategy, r["score"])
     r = agent.run_episode(seed=5, chaos=False, strategy="urgency_first")
-    assert 0 <= r["score"] <= 100
     assert agent.load_memory()["episodes"][-1]["score"] == r["score"]
 
 

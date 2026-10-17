@@ -139,7 +139,8 @@ class ReliefEnv:
             d["stock"][n["item"]] -= qty
             km = distance_km(_pt(d), _pt(n)) * (DETOUR_FACTOR if a.get("detour") else 1)
             hours = km / SPEED_KMH
-            reward += n["urgency"] * 10 * qty / n["qty"] - n["urgency"] * hours * 4
+            # credit relative to the original request, so split deliveries can't exceed the best case
+            reward += n["urgency"] * 10 * qty / n["requested"] - n["urgency"] * hours * 4
             n["qty"] -= qty
             if n["qty"] <= 0:
                 s["pending"].remove(n["id"])
@@ -152,7 +153,8 @@ class ReliefEnv:
         done = not s["pending"] or s["step"] >= MAX_STEPS
         if done:
             for nid in s["pending"]:
-                reward -= self._need(nid)["urgency"] * 10
+                n = self._need(nid)
+                reward -= n["urgency"] * 10 * n["qty"] / n["requested"]  # penalise only the undelivered share
             info["unmet"] = list(s["pending"])
         s["total_reward"] += reward
         s["done"] = done
