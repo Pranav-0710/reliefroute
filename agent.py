@@ -45,7 +45,8 @@ def llm_available():
 
 # ---- memory -----------------------------------------------------------------
 def _memory_path():
-    return os.getenv("MEMORY_PATH", "memory.json")
+    # Serverless hosts (Vercel) only allow writes under /tmp
+    return os.getenv("MEMORY_PATH") or ("/tmp/memory.json" if os.getenv("VERCEL") else "memory.json")
 
 
 def load_memory():
