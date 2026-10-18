@@ -38,6 +38,9 @@ flowchart TD
 | `main.py` | HTTP layer. Turns requests into calls on `agent.py` and returns JSON. |
 | `mcp_server.py` | Implements the MCP methods and maps four tools onto `agent.py`. |
 | `static/index.html` | The console: report form, pipeline, map, event log, performance panel. One file, no build step. |
+| `policy.py` | Features and decision procedure of the learned policy, plus inference in plain Python from `policy_weights.json`. |
+| `rl/train_policy.py` | Trains the policy with REINFORCE in PyTorch. Only needed offline. |
+| `relief_openenv/` | The simulator wrapped as an OpenEnv environment (typed models, server, client, manifest). |
 
 ## 2. Lifecycle of a dispatch
 
@@ -87,14 +90,17 @@ If any Gemini call fails, that step falls back to a local method instead of fail
 **Action**
 
 ```json
-{"assignments": [{"need_id": "R1", "depot_id": "D2", "detour": false}]}
+{"assignments": [{"need_id": "R1", "depot_id": "D2", "detour": false, "truck_id": "D2-T1"}]}
 ```
+
+The order of the list is the loading order. Each truck visits its stops in the order they were assigned to it. `truck_id` is optional: without it, the depot's truck that is free earliest takes the stop.
 
 **Observation**
 
 | Field | Contents |
 |---|---|
-| `depots` | Id, name, coordinates, current stock per item |
+| `depots` | Id, name, coordinates, current stock per item, truck ids |
+| `truck_capacity` | Units one truck can carry in a round |
 | `pending_needs` | Unserved requests: zone, coordinates, item, remaining quantity, urgency 1–5, source (`sim` or `field`) |
 | `known_hazards` | Flood zones and collapses reported so far |
 | `route_matrix` | For every pending need and depot: distance in km, and which hazards the route crosses |
@@ -108,17 +114,28 @@ If any Gemini call fails, that step falls back to a local method instead of fail
 | Stock | 60–260 units of each of water, food, medicine, blankets, per depot |
 | Simulated requests | 5 per episode, in 10 Chennai localities, 30–150 units, urgency 1–5 |
 | Field requests | Added from the report, ids `R1`, `R2`, … |
+| Fleet | 2 trucks per depot, 250 units each per round. Trucks start each round empty at their depot. |
 | Flood zones | 1–2 random, radius 1.0 km. Hazards from the report have radius 0.8 km. |
-| Disruption | On step 1, a bridge collapse (radius 0.6 km) at the midpoint of the longest assigned route that is not detouring |
+| Disruption | On step 1, a bridge collapse (radius 0.6 km) at the midpoint of the longest leg the trucks are about to drive without a detour |
 | Distance | Straight line in a local projection, multiplied by 1.3 for road winding |
 | Detour | Distance multiplied by 1.6. A detour always gets through. |
 | Speed | 25 km/h |
 | Episode length | Ends when every need is served, or after 3 steps |
 
-**Rules applied in each step**
+**Rules applied in each step (one dispatch round)**
 - Invalid assignments are ignored and counted in `info.invalid`: unknown ids, needs already served, and duplicate assignments for the same need.
-- A route is **blocked** if the straight segment from depot to need passes inside any hazard circle and `detour` is false. The need stays pending.
-- If the depot does not have enough stock, it delivers what it has. The rest of the need stays pending.
+- Each assignment is loaded onto a truck of its depot. If every truck at that depot is full, it goes to `info.no_truck` and the need stays pending.
+- A truck drives **leg by leg**: depot → first stop → second stop, and so on. Each leg is checked against every hazard circle. A blocked leg without `detour` fails; the truck stays where it is and carries on to its next stop.
+- The amount delivered is the smallest of: what the need still requires, the depot's stock, and the truck's remaining capacity. The rest of the need stays pending for the next round.
+- Arrival time accumulates along the route, so the third stop of a truck arrives later than its first.
+
+```mermaid
+flowchart LR
+    D["Depot D1"] -->|"leg 1"| S1["Stop 1<br/>urgent medicine"]
+    S1 -->|"leg 2"| S2["Stop 2<br/>food"]
+    S2 -->|"leg 3, blocked"| S3["Stop 3<br/>stays pending"]
+    S2 -.->|"next round"| S3
+```
 
 ## 4. Reward and score
 
@@ -126,9 +143,10 @@ For each step:
 
 ```
 delivered   +  urgency × 10 × delivered_qty / requested_qty
-            −  urgency × hours × 4              (hours = km / 25)
+            −  urgency × arrival_hours × 4      (arrival_hours = km driven by that truck so far / 25)
 blocked     −  5
 no stock    −  2
+no truck    −  2
 ```
 
 When the episode ends, every request still not fully served costs:
@@ -150,6 +168,7 @@ Normalising makes easy and hard episodes comparable, which is what the learning 
 | Strategy | Order | Depot choice | Floods |
 |---|---|---|---|
 | `llm` | Gemini decides | Gemini decides, from the observation and stored lessons | Gemini is told to detour around `blocked_by` routes, and the guardrail enforces it |
+| `rl_policy` | Learned (need network) | Learned (depot network) | Detours around known hazards |
 | `urgency_first` | Most urgent first | Nearest depot with enough stock | Detours around known hazards |
 | `nearest_first` | Arrival order | Nearest depot with enough stock | Detours around known hazards |
 | `fifo` | Arrival order | First depot with any stock | Ignores hazards |
@@ -178,11 +197,30 @@ flowchart TD
     MEM --> B
 ```
 
-**Policy: an epsilon-greedy bandit** (`agent.select_strategy`)
+**Offline RL: the `rl_policy` strategy** (`policy.py`, `rl/train_policy.py`)
+
+```mermaid
+flowchart LR
+    S["Simulator episode<br/>random seed"] --> F["Features per request<br/>and per depot"]
+    F --> N1["Need network<br/>pick next request"]
+    N1 --> N2["Depot network<br/>pick depot"]
+    N2 --> A["Round of assignments"]
+    A --> S
+    S -->|"episode return"| R["REINFORCE update<br/>advantage = return − batch mean"]
+    R --> N1
+    R --> N2
+```
+
+- Each network is one tanh hidden layer of 16 units. The need network scores every pending request, and sampling from its softmax picks the next one to load (this sets the stop order). The depot network then scores the depots that have stock.
+- `policy.decide` is written without any framework, so training (PyTorch tensors, sampled choices) and serving (plain floats, greedy choices) run exactly the same procedure.
+- Training: 6,000 episodes in batches of 32, Adam with learning rate 0.01, return = reward / best possible reward, with the batch mean as baseline.
+- Evaluation: 500 scenarios with seeds disjoint from training, all with the bridge collapse on. Results are in `rl/results.json`: 55.7% untrained, 80.2% trained, against 80.0% for `urgency_first`.
+
+**Online policy selection: an epsilon-greedy bandit** (`agent.select_strategy`)
 - Strategies that have never been tried are tried first.
 - After that, 80% of the time it picks the strategy with the best average score; 20% of the time it picks one at random, so a strategy that has improved can be rediscovered.
 - After each episode, that strategy's average is updated incrementally with the new score.
-- `llm` is only an option when a Gemini key is configured.
+- `llm` is only an option when a Gemini key is configured, and `rl_policy` only when `policy_weights.json` is present.
 - Training runs use the bandit. Dispatches from the web app always use `llm` when available, because only Gemini can read photos, audio and non-English text.
 
 **Reflection** (`agent.reflect`)
@@ -208,6 +246,7 @@ The latest 200 episodes are kept.
 | Failure | How it is detected | Recovery | Log tag |
 |---|---|---|---|
 | Route blocked mid-delivery | `info.blocked` from the simulator | Need stays pending, then is replanned next step (detour or another depot) | `ALERT`, `REROUTE` |
+| No truck capacity left at a depot | `info.no_truck` from the simulator | Need stays pending and is loaded in the next round | `STEP n` |
 | Gemini plan is invalid or unsafe | Guardrail checks against the observation | Drop, force a detour, or fill the gap with `urgency_first` | `GUARDRAIL` |
 | Gemini model out of quota (HTTP 429) | Error text `RESOURCE_EXHAUSTED` | Circuit breaker skips that model for 5 minutes, then the next model is tried immediately | `FAILOVER` |
 | Gemini transient error or bad JSON | Exception from the call or the parser | Retry once with backoff, then the next model | `FAILOVER` |
@@ -282,6 +321,18 @@ Exceptions inside a tool come back as a normal result with `isError: true`, so t
 
 **Secrets.** The Gemini key is stored as an encrypted Vercel environment variable. It is never in the repository.
 
+**Protecting a public deployment.** The app has no login, so two limits keep one visitor from using up the shared Gemini quota or wiping memory:
+
+| Limit | Value | Where |
+|---|---|---|
+| Dispatches per client address | 8 per 10 minutes | `main.check_rate` |
+| Training requests per client address | 60 per 10 minutes | `main.check_rate` |
+| Costly MCP tool calls (`dispatch_relief`, `parse_field_report`, `train_agent`) | 10 per 10 minutes | `main.mcp` |
+| Memory resets | 5 per 10 minutes | `main.check_rate` |
+| Gemini calls per server instance per UTC day | `GEMINI_DAILY_BUDGET`, default 300 | `agent._spend_budget` |
+
+When a rate limit is hit, the response is HTTP 429 with `Retry-After`. MCP gets a JSON-RPC error `-32000`. When the daily budget is spent, every Gemini step falls back to its rule-based method, exactly as if the API were down. All counters are in memory per instance, so they are a guard, not an exact global quota.
+
 ## 11. Tests
 
 `test_app.py` runs with `OFFLINE=1` and a temporary memory file. No network access or key is needed.
@@ -299,3 +350,11 @@ Exceptions inside a tool come back as a normal result with `isError: true`, so t
 | `test_mcp_protocol_and_tools` | Handshake, notifications, tool listing, a tool call and error codes |
 | `test_offline_intake_extracts_need` | Keyword intake handles English and Tanglish, and does not read "underwater" as a water request |
 | `test_api_end_to_end` | Web page, dispatch with an image upload, training, scenario and memory reset |
+| `test_truck_capacity_caps_a_single_delivery` | One truck never carries more than its capacity; the rest waits for the next round |
+| `test_multi_stop_route_is_driven_in_order` | Stops are numbered in loading order, arrivals are non-decreasing, each leg starts at the previous stop |
+| `test_no_truck_when_depot_fleet_is_full` | Assignments beyond the depot's fleet are reported as `no_truck` |
+| `test_policy_decide_serves_every_stocked_need` | The policy's decision procedure produces a valid plan covering every request that has stock |
+| `test_trained_policy_runs_without_pytorch` | The exported weights drive a full episode with no PyTorch installed |
+| `test_openenv_environment_and_server` | The OpenEnv environment plays a full episode, and its server answers `/health` and `/schema` (skipped without `openenv`) |
+| `test_rate_limits_per_client` | REST and MCP limits trigger per client address. Cheap MCP methods are never limited. |
+| `test_daily_gemini_budget_degrades_to_rules` | The daily Gemini budget refuses calls once spent |

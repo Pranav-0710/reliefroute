@@ -1,10 +1,12 @@
 """ReliefRoute agent: multimodal intake -> plan -> dispatch -> self-heal -> reflect/learn.
 
-Learning happens at two levels, both persisted in memory.json:
-  1. Policy selection: an epsilon-greedy bandit (tiny RL) over planning strategies,
-     updated with each episode's reward from the simulator.
-  2. Reflection: after each episode Gemini writes lessons that are fed into the
-     next episode's planning prompt.
+Learning happens at three levels:
+  1. Offline RL: a neural dispatch policy trained with REINFORCE in the simulator
+     (rl/train_policy.py), served from policy_weights.json as the "rl_policy" strategy.
+  2. Policy selection: an epsilon-greedy bandit over planning strategies,
+     updated with each episode's score (persisted in memory.json).
+  3. Reflection: after each episode Gemini writes lessons that are fed into the
+     next episode's planning prompt (persisted in memory.json).
 """
 import json
 import os
@@ -15,9 +17,10 @@ import time
 
 import httpx
 
+import policy
 from env import CENTER, ITEMS, ZONES, ReliefEnv, distance_km
 
-STRATEGIES = ["llm", "urgency_first", "nearest_first", "fifo"]
+STRATEGIES = ["llm", "rl_policy", "urgency_first", "nearest_first", "fifo"]
 EPSILON = 0.2
 ROUTES_URL = "https://routes.googleapis.com/directions/v2:computeRoutes"
 _lock = threading.Lock()
@@ -94,7 +97,7 @@ def reset_memory():
 
 
 def select_strategy(mem, explore=True):
-    arms = [s for s in STRATEGIES if s != "llm" or llm_available()]
+    arms = [s for s in STRATEGIES if (s != "llm" or llm_available()) and (s != "rl_policy" or policy.available())]
     untried = [s for s in arms if mem["bandit"][s]["n"] == 0]
     if untried:
         return untried[0]
@@ -112,12 +115,36 @@ def _parse_json(text):
 
 QUOTA_COOLDOWN_S = 300
 _cooldown = {}  # model -> time until which it is skipped (circuit breaker for exhausted quota)
+_budget = {"day": "", "used": 0}  # Gemini calls made by this server instance today (UTC)
+
+
+def _daily_budget():
+    return int(os.getenv("GEMINI_DAILY_BUDGET", "300"))
+
+
+def budget_status():
+    today = time.strftime("%Y-%m-%d", time.gmtime())
+    used = _budget["used"] if _budget["day"] == today else 0
+    return {"used_today": used, "daily_limit": _daily_budget()}
+
+
+def _spend_budget():
+    """Count one Gemini call; refuse once this instance's daily budget is spent, so a busy public
+    deployment degrades to the rule-based fallbacks instead of exhausting the shared quota."""
+    today = time.strftime("%Y-%m-%d", time.gmtime())
+    with _lock:
+        if _budget["day"] != today:
+            _budget.update(day=today, used=0)
+        if _budget["used"] >= _daily_budget():
+            raise RuntimeError("daily Gemini budget for this server reached")
+        _budget["used"] += 1
 
 
 def gemini_json(parts, heals):
     from google import genai
     from google.genai import types
 
+    _spend_budget()
     client = genai.Client(api_key=_gemini_key())
     last = None
     now = time.time()
@@ -231,6 +258,7 @@ def intake(text="", image=None, audio=None, heals=None):
 
 # ---- planning ---------------------------------------------------------------
 STRATEGY_NOTES = {
+    "rl_policy": "Neural policy trained with reinforcement learning (REINFORCE, PyTorch) in this simulator.",
     "urgency_first": "Most urgent first; nearest depot with enough stock; detour around reported floods.",
     "nearest_first": "Arrival order; nearest depot with enough stock; detour around reported floods.",
     "fifo": "Arrival order; first depot with any stock; ignores flood reports.",
@@ -238,7 +266,9 @@ STRATEGY_NOTES = {
 
 
 def heuristic_plan(obs, strategy):
-    stock = {d["id"]: dict(d["stock"]) for d in obs["depots"]}
+    if strategy == "rl_policy":
+        return policy.plan(obs)
+    stock ={d["id"]: dict(d["stock"]) for d in obs["depots"]}
     needs = obs["pending_needs"]
     if strategy == "urgency_first":
         needs = sorted(needs, key=lambda n: -n["urgency"])
@@ -260,7 +290,11 @@ def heuristic_plan(obs, strategy):
 
 
 PLAN_PROMPT = """You are the dispatch planner of a flood-relief operation. Assign each pending need to one depot.
-Goals: serve the most urgent needs first, never exceed depot stock, prefer short routes, and set
+Fleet: each depot has the trucks listed in "trucks", each carrying at most truck_capacity units this round.
+Assignments are loaded onto trucks in the order you list them, and a truck visits its stops in that order,
+so later stops arrive later. Optionally set "truck_id" to choose the truck; otherwise the depot's
+earliest-free truck is used.
+Goals: serve the most urgent needs first, never exceed depot stock or truck capacity, prefer short routes, and set
 "detour": true whenever route_matrix shows the route is blocked_by a hazard (detours cost 60% more distance).
 Lessons learned from previous episodes (apply them!):
 {lessons}
@@ -270,7 +304,7 @@ Return ONLY JSON: {{"reasoning": "<2 sentences>", "assignments": [{{"need_id": "
 
 
 def llm_plan(obs, lessons, heals):
-    compact = {k: obs[k] for k in ("step", "depots", "known_hazards", "route_matrix")}
+    compact = {k: obs[k] for k in ("step", "depots", "truck_capacity", "known_hazards", "route_matrix")}
     compact["pending_needs"] = [{k: n[k] for k in ("id", "zone", "item", "qty", "urgency")} for n in obs["pending_needs"]]
     prompt = PLAN_PROMPT.format(lessons="\n".join(f"- {l}" for l in lessons) or "- (none yet)",
                                 obs=json.dumps(compact))
@@ -294,7 +328,13 @@ def repair(obs, assignments, heals):
             heals.append(f"Guardrail: {a['need_id']} via {a['depot_id']} crosses {blocked} -> forcing detour")
             detour = True
         seen.add(a["need_id"])
-        good.append({"need_id": a["need_id"], "depot_id": a["depot_id"], "detour": detour})
+        fixed = {"need_id": a["need_id"], "depot_id": a["depot_id"], "detour": detour}
+        trucks = next(d["trucks"] for d in obs["depots"] if d["id"] == a["depot_id"])
+        if a.get("truck_id") in trucks:
+            fixed["truck_id"] = a["truck_id"]
+        elif a.get("truck_id"):
+            heals.append(f"Guardrail: truck {str(a['truck_id'])[:20]} is not at {a['depot_id']} -> depot assigns one")
+        good.append(fixed)
     missing = pend - seen
     if missing:
         heals.append(f"Planner skipped {sorted(missing)} -> filled by urgency_first fallback")

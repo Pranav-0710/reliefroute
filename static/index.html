@@ -126,7 +126,7 @@
     </div>
     <div class="block">
       <h2>Training</h2>
-      <p class="hint">Plays simulated flood scenarios (OpenEnv-style reset / step). Every run is scored; the policy and the lesson memory update.</p>
+      <p class="hint">Plays simulated flood scenarios in the OpenEnv environment. Every run is scored; the bandit and the lesson memory update. <span class="num">rl_policy</span> is a neural policy trained offline with reinforcement learning (PyTorch).</p>
       <div class="row">
         <button class="btn" id="train">Run 5 episodes</button>
         <button class="btn" id="reset">Reset memory</button>
@@ -146,7 +146,7 @@
         <span><svg width="10" height="10"><rect width="10" height="10" fill="#e7e5e2"/></svg>Depot</span>
         <span><svg width="10" height="10"><circle cx="5" cy="5" r="4" fill="#7a9cc6"/></svg>Open request</span>
         <span><svg width="10" height="10"><circle cx="5" cy="5" r="4" fill="#e3a33b"/></svg>Field report</span>
-        <span><svg width="18" height="6"><line x1="0" y1="3" x2="18" y2="3" stroke="#5fb37f" stroke-width="2"/></svg>Delivered</span>
+        <span><svg width="18" height="6"><line x1="0" y1="3" x2="18" y2="3" stroke="#5fb37f" stroke-width="2"/></svg>Truck leg</span>
         <span><svg width="18" height="6"><line x1="0" y1="3" x2="18" y2="3" stroke="#5fb37f" stroke-width="2" stroke-dasharray="5 3"/></svg>Detour</span>
         <span><svg width="18" height="6"><line x1="0" y1="3" x2="18" y2="3" stroke="#e0574f" stroke-width="2" stroke-dasharray="2 3"/></svg>Blocked</span>
         <span><svg width="10" height="10"><circle cx="5" cy="5" r="4.5" fill="#e0574f33" stroke="#e0574f"/></svg>Flooded</span>
@@ -236,14 +236,16 @@ function drawMap(res) {
     s += label(x + 8, y - 8, esc(h.label), C.red, 10);
   }
   for (const t of res.trace) for (const b of t.info.blocked) {
-    const [x1, y1] = at(depots[b.depot_id]), [x2, y2] = at(needs[b.need_id]);
+    const [x1, y1] = at(b.from || depots[b.depot_id]), [x2, y2] = at(needs[b.need_id]);
     const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
     s += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${C.red}" stroke-width="1.5" stroke-dasharray="2 4"/>`;
     s += `<path d="M${mx - 5} ${my - 5} L${mx + 5} ${my + 5} M${mx + 5} ${my - 5} L${mx - 5} ${my + 5}" stroke="${C.red}" stroke-width="2.5" stroke-linecap="round"/>`;
   }
-  for (const d of res.deliveries) {
-    const [x1, y1] = at(depots[d.depot_id]), [x2, y2] = at(needs[d.need_id]);
-    s += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${C.green}" stroke-width="2" ${d.detour ? 'stroke-dasharray="7 5"' : ""}><title>${d.need_id} ← ${d.depot_id}: ${d.qty} ${d.item}, ${d.km} km${d.detour ? " (detour)" : ""}</title></line>`;
+  for (const d of res.deliveries) {  // one leg per delivery: depot or previous stop -> this stop
+    const [x1, y1] = at(d.from || depots[d.depot_id]), [x2, y2] = at(needs[d.need_id]);
+    const truck = d.truck_id ? `${d.truck_id} stop ${d.stop}, ` : "";
+    s += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${C.green}" stroke-width="2" ${d.detour ? 'stroke-dasharray="7 5"' : ""}><title>${truck}${d.need_id} ← ${d.depot_id}: ${d.qty} ${d.item}, ${d.km} km, arrives ${d.minutes} min${d.detour ? " (detour)" : ""}</title></line>`;
+    if (d.stop > 1) s += `<circle cx="${x1}" cy="${y1}" r="2.5" fill="${C.green}"/>`;
   }
   for (const n of Object.values(needs)) {
     const [x, y] = at(n), field = n.source === "field", unmet = res.unmet.includes(n.id);
@@ -336,9 +338,10 @@ function renderEpisode(res) {
   }
   for (const t of res.trace) {
     ev(`STEP ${t.step}`, t.info.blocked.length ? "bad" : "", `<span class="sub">${esc(t.strategy)}</span> · ${esc(t.reasoning)}` +
-      t.info.delivered.map(d => `<div class="sub num">${d.need_id} ← ${d.depot_id}  ${d.qty} ${d.item}  ${d.km} km${d.detour ? "  detour" : ""}` +
-        (d.eta ? `  ${d.eta.minutes} min (${d.eta.source === "google_routes" ? "Google Routes" : "estimate"})` : "") + `</div>`).join("") +
-      t.info.blocked.map(b => `<div class="num" style="color:var(--red)">${b.need_id} ← ${b.depot_id}  blocked by ${b.hazards.join(", ")}</div>`).join(""));
+      t.info.delivered.map(d => `<div class="sub num">${d.need_id} ← ${d.truck_id || d.depot_id}${d.stop ? ` #${d.stop}` : ""}  ${d.qty} ${d.item}  ${d.km} km  ${d.minutes} min${d.detour ? "  detour" : ""}` +
+        (d.eta ? `  (road ETA ${d.eta.minutes} min, ${d.eta.source === "google_routes" ? "Google Routes" : "estimate"})` : "") + `</div>`).join("") +
+      t.info.blocked.map(b => `<div class="num" style="color:var(--red)">${b.need_id} ← ${b.truck_id || b.depot_id}  blocked by ${b.hazards.join(", ")}</div>`).join("") +
+      (t.info.no_truck || []).map(b => `<div class="num" style="color:var(--amber)">${b.need_id} ← ${b.depot_id}  no truck capacity left this round</div>`).join(""));
   }
   for (const h of res.heals) { const [tag, cls] = healTag(h); ev(tag, cls, esc(h.replace(/^ALERT\s*/, ""))); }
   ev("SCORE", res.unmet.length ? "bad" : "good", `<span class="num">${res.score}%</span> of best possible <span class="sub">· reward ${res.total_reward} · unmet: ${res.unmet.join(", ") || "none"}</span>`);
@@ -437,7 +440,11 @@ $("rec").onclick = async () => {
 
 async function api(path, opts) {
   const r = await fetch(path, opts);
-  if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+  if (!r.ok) {
+    let msg = await r.text();
+    try { msg = JSON.parse(msg).detail || msg; } catch {}
+    throw new Error(r.status === 429 ? msg : `${r.status} ${msg}`);
+  }
   return r.json();
 }
 

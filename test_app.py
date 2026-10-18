@@ -127,6 +127,122 @@ def test_quota_circuit_breaker_skips_exhausted_model(monkeypatch):
     assert calls[2:] == ["lite"] and heals2 == []  # breaker open: exhausted model skipped entirely
 
 
+def _calm_env(seed=11):
+    """Deterministic scenario: no floods, plenty of stock, so only truck rules matter."""
+    import env as envmod
+
+    e = ReliefEnv()
+    e.reset(seed=seed, chaos=False)
+    e._s["hazards"] = []
+    for d in e._s["depots"]:
+        d["stock"] = {it: 5000 for it in envmod.ITEMS}
+    return e, envmod
+
+
+def test_truck_capacity_caps_a_single_delivery():
+    e, envmod = _calm_env()
+    n = e._s["needs"][0]
+    n["qty"] = n["requested"] = 600
+    res = e.step({"assignments": [{"need_id": n["id"], "depot_id": "D1"}]})
+    assert res["info"]["delivered"][0]["qty"] == envmod.TRUCK_CAPACITY
+    assert n["id"] in [m["id"] for m in res["observation"]["pending_needs"]]  # rest waits for the next round
+
+
+def test_multi_stop_route_is_driven_in_order():
+    e, envmod = _calm_env()
+    for n in e._s["needs"]:
+        n["qty"] = n["requested"] = 40
+    ids = [n["id"] for n in e._s["needs"][:3]]
+    res = e.step({"assignments": [{"need_id": i, "depot_id": "D1", "truck_id": "D1-T1"} for i in ids]})
+    legs = res["info"]["delivered"]
+    assert [d["stop"] for d in legs] == [1, 2, 3] and {d["truck_id"] for d in legs} == {"D1-T1"}
+    assert legs[0]["minutes"] <= legs[1]["minutes"] <= legs[2]["minutes"]  # later stops arrive later
+    first = e._need(ids[0])
+    assert (legs[1]["from"]["lat"], legs[1]["from"]["lng"]) == (first["lat"], first["lng"])
+
+
+def test_no_truck_when_depot_fleet_is_full():
+    e, envmod = _calm_env()
+    for n in e._s["needs"]:
+        n["qty"] = n["requested"] = 250
+    res = e.step({"assignments": [{"need_id": n["id"], "depot_id": "D2"} for n in e._s["needs"][:3]]})
+    assert len(res["info"]["delivered"]) == envmod.TRUCKS_PER_DEPOT
+    assert len(res["info"]["no_truck"]) == 1
+
+
+def test_policy_decide_serves_every_stocked_need():
+    import random as rnd
+
+    import policy
+
+    e = ReliefEnv()
+    obs = e.reset(seed=21)
+    r = rnd.Random(0)
+    plan = policy.decide(obs, lambda f: r.random(), lambda f: r.random(), lambda logits, kind: r.randrange(len(logits)))
+    stocked = {n["id"] for n in obs["pending_needs"]
+               if any(d["stock"].get(n["item"], 0) > 0 for d in obs["depots"])}
+    assert {a["need_id"] for a in plan} == stocked
+    assert e.step({"assignments": plan})["info"]["invalid"] == 0
+
+
+def test_trained_policy_runs_without_pytorch():
+    import policy
+
+    if not policy.available():
+        pytest.skip("policy_weights.json not trained yet")
+    r = agent.run_episode(seed=5, chaos=True, strategy="rl_policy")
+    assert r["strategy"] == "rl_policy" and 0 <= r["score"] <= 100 and r["deliveries"]
+
+
+def test_openenv_environment_and_server():
+    pytest.importorskip("openenv")
+    from relief_openenv import Assignment, ReliefAction
+    from relief_openenv.server.app import app as openenv_app
+    from relief_openenv.server.environment import ReliefEnvironment
+
+    env = ReliefEnvironment()
+    obs = env.reset(seed=3, chaos=True)
+    assert not obs.done and obs.pending_needs and obs.truck_capacity
+    while not obs.done:
+        plan = agent.heuristic_plan(obs.model_dump(), "urgency_first")
+        obs = env.step(ReliefAction(assignments=[Assignment(**a) for a in plan]))
+    assert obs.score is not None and 0 <= obs.score <= 100 and env.state.step_count >= 1
+    c = TestClient(openenv_app)
+    assert c.get("/health").status_code == 200
+    schema = c.get("/schema").json()
+    assert "assignments" in str(schema)
+
+
+def test_rate_limits_per_client(monkeypatch):
+    import main
+
+    monkeypatch.setattr(main, "LIMITS", {**main.LIMITS, "dispatch": (2, 600), "mcp": (1, 600)})
+    main._hits.clear()
+    c = TestClient(main.app)
+    for _ in range(2):
+        assert c.post("/api/dispatch", data={"text": "50 food in Adyar"}).status_code == 200
+    r = c.post("/api/dispatch", data={"text": "50 food in Adyar"})
+    assert r.status_code == 429 and "Retry-After" in r.headers
+    other = c.post("/api/dispatch", data={"text": "50 food"}, headers={"x-forwarded-for": "203.0.113.9"})
+    assert other.status_code == 200  # limits are per client address
+    call = {"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {"name": "dispatch_relief",
+                                                                          "arguments": {"text": "x"}}}
+    assert c.post("/mcp", json=call).status_code == 200
+    blocked = c.post("/mcp", json=call)
+    assert blocked.status_code == 429 and blocked.json()["error"]["code"] == -32000
+    assert c.post("/mcp", json={"jsonrpc": "2.0", "id": 8, "method": "tools/list"}).status_code == 200  # cheap: never limited
+    main._hits.clear()
+
+
+def test_daily_gemini_budget_degrades_to_rules(monkeypatch):
+    monkeypatch.setenv("GEMINI_DAILY_BUDGET", "1")
+    monkeypatch.setattr(agent, "_budget", {"day": "", "used": 0})
+    agent._spend_budget()
+    with pytest.raises(RuntimeError, match="budget"):
+        agent._spend_budget()
+    assert agent.budget_status() == {"used_today": 1, "daily_limit": 1}
+
+
 def test_offline_intake_extracts_need():
     out = agent.intake("Urgent: 120 people in Velachery need water")
     n = out["needs"][0]
