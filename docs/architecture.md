@@ -411,6 +411,8 @@ Results are written back by incident id. The state is re-read under a lock, so r
 - a fully served incident becomes `delivered`, with its truck, stop and arrival time in `note`
 - blocked and no-truck incidents keep `waiting`, with the reason in `note`
 
+**Known limitation: several instances.** State lives in one instance's `/tmp`. The browser copy recovers from an instance *restart*, but not from two instances running *at the same time*: a report handled by one is invisible to a console reading the other. Moving `ops.json` and `memory.json` to Firestore removes this.
+
 **GPS placement.** A phone report with a position inside the Chennai area places all of its incidents at that position. This replaces the coordinates Gemini inferred from the place name.
 
 **Situation report.** `ops.sitrep` assembles the facts: figures, per-area waiting needs with wait times, hazards, stock and recent waves. Gemini turns them into headline, overview, priorities, blocked roads and actions, using only that data, and the output is validated and truncated field by field. Stock alerts are a threshold fact, so they always come from the rule and Gemini never sees raw stock levels; in testing it flagged healthy depots as alerts. Without Gemini, `_rule_sitrep` produces the same sections deterministically: priorities by urgency then wait time, stock under 100 units, and one action per open problem.

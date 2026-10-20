@@ -497,7 +497,7 @@ async function api(path, opts) {
 
 // ---- live operations ------------------------------------------------------------------------------
 const OPS_KEY = "reliefroute-ops";
-let ops = null, opsDepots = null, opsBusy = false, opsSeen = null;
+let ops = null, opsDepots = null, opsBusy = false, opsSeen = null, opsLastWave = null;
 try { ops = JSON.parse(localStorage.getItem(OPS_KEY)); } catch { ops = null; }
 const mins = ts => Math.max(0, Math.round((Date.now() / 1000 - ts) / 60));
 const postJSON = (path, body) => api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -523,7 +523,7 @@ function renderOps(st, s) {
   if (document.body.dataset.mode === "ops" && !opsBusy) drawOpsMap();
 }
 
-function drawOpsMap(wave) {
+function drawOpsMap(wave = opsLastWave) {  // keep the last wave's routes on screen across polling refreshes
   if (!ops || !opsDepots) return;
   const depots = opsDepots.map(d => ({ ...d, stock: ops.stock[d.id] || d.stock }));
   const inWave = new Set(wave ? wave.trace[0].action.map(a => a.need_id) : []);
@@ -587,6 +587,7 @@ $("wave").onclick = async () => {
     const r = await postJSON("/api/ops/wave", { chaos: $("opsChaos").checked, ops });
     const w = r.wave, t = r.trace[0];
     opsBusy = false;
+    opsLastWave = r;
     renderOps(r.ops, r.summary); drawOpsMap(r);
     $("log").innerHTML = "";
     ev(`WAVE ${w.n}`, w.blocked ? "bad" : "good", `<span class="sub">${esc(w.strategy)}</span> · ${esc(t.reasoning)}${legLines(t.info)}`);
@@ -627,7 +628,7 @@ $("opsReset").onclick = async () => {
   if (!confirm("Start a new operation? This clears the incident queue and hazards and restocks every depot.")) return;
   try {
     const r = await api("/api/ops/reset", { method: "POST" });
-    opsSeen = new Set(); renderOps(r.ops, r.summary); drawOpsMap();
+    opsSeen = new Set(); opsLastWave = null; renderOps(r.ops, r.summary); drawOpsMap();
     $("log").innerHTML = '<div class="empty">New operation started. Depots restocked.</div>';
   } catch (e) { ev("ERROR", "bad", esc(e.message)); }
 };
