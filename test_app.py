@@ -13,6 +13,7 @@ from env import ReliefEnv
 @pytest.fixture(autouse=True)
 def tmp_memory(tmp_path, monkeypatch):
     monkeypatch.setenv("MEMORY_PATH", str(tmp_path / "memory.json"))
+    monkeypatch.setenv("OPS_PATH", str(tmp_path / "ops.json"))
 
 
 def test_env_contract_reset_step_state():
@@ -211,6 +212,55 @@ def test_openenv_environment_and_server():
     assert c.get("/health").status_code == 200
     schema = c.get("/schema").json()
     assert "assignments" in str(schema)
+
+
+def test_operations_queue_wave_and_sitrep():
+    import main
+
+    main._hits.clear()
+    c = TestClient(main.app)
+    assert "Field report" in c.get("/report").text
+    r = c.post("/api/reports", data={"text": "Urgent: 120 people in Velachery need water and medicine",
+                                     "source": "phone", "lat": "12.9790", "lng": "80.2200"}).json()
+    assert [i["item"] for i in r["incidents"]] == ["water", "medicine"]
+    assert all(i["located_by"] == "gps" and i["lat"] == 12.979 and i["status"] == "waiting" for i in r["incidents"])
+    assert c.get("/api/ops").json()["summary"]["waiting"] == 2
+
+    w = c.post("/api/ops/wave", json={"chaos": False}).json()
+    units = sum(d["qty"] for d in w["deliveries"])
+    assert w["wave"]["n"] == 1 and units > 0
+    stock_left = sum(sum(items.values()) for items in w["ops"]["stock"].values())
+    assert stock_left == 3 * 4 * 400 - units  # depots start with 400 of each item
+    delivered = [i for i in w["ops"]["incidents"] if i["status"] == "delivered"]
+    assert delivered and all(i["qty"] == 0 and "arrives" in i["note"] for i in delivered)
+
+    s = c.post("/api/ops/sitrep").json()
+    assert s["generated_by"] == "rules" and s["text"].startswith("SITUATION REPORT")
+    assert "Recommended actions" in s["text"]
+
+    assert c.post("/api/ops/reset").json()["summary"]["waiting"] == 0
+    assert c.post("/api/ops/wave", json={}).status_code == 409  # nothing to dispatch
+    assert c.post("/api/reports", data={"text": ""}).status_code == 400
+    main._hits.clear()
+
+
+def test_operation_keeps_collapsed_roads_and_restores_from_browser():
+    import ops
+
+    report = {"summary": "test", "needs": [agent._clean_need({"zone": "Ennore", "item": "food", "qty": 90, "urgency": 4}),
+                                           agent._clean_need({"zone": "Porur", "item": "water", "qty": 60, "urgency": 5})],
+              "hazards": []}
+    ops.add_report(report)
+    out = ops.run_wave(chaos=True)
+    assert out["trace"][0]["info"]["new_hazards"]
+    assert any(h["label"].startswith("Bridge collapsed") for h in out["ops"]["hazards"])  # stays for later waves
+    browser_copy = out["ops"]
+    ops.reset()  # a restarted serverless instance
+    ops.sync(browser_copy)
+    restored = ops.load()
+    assert restored["version"] == browser_copy["version"] and len(restored["incidents"]) == 2
+    ops.sync({"version": 999, "incidents": [{"id": "I1", "item": "gold", "lat": 0, "lng": 0}]})  # junk is filtered
+    assert all(i["item"] in ("food", "water") for i in ops.load()["incidents"])
 
 
 def test_rate_limits_per_client(monkeypatch):

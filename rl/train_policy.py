@@ -81,40 +81,54 @@ def main():
     ap.add_argument("--batch", type=int, default=32)
     ap.add_argument("--lr", type=float, default=0.01)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--hidden", type=int, default=24)
+    ap.add_argument("--group", type=int, default=8, help="attempts per scenario for the group baseline")
     args = ap.parse_args()
     torch.manual_seed(args.seed)
 
-    need_net, depot_net = Scorer(policy.N_NEED), Scorer(policy.N_PAIR)
+    need_net, depot_net = Scorer(policy.N_NEED, args.hidden), Scorer(policy.N_PAIR, args.hidden)
     opt = torch.optim.Adam([*need_net.parameters(), *depot_net.parameters()], lr=args.lr)
 
     with torch.no_grad():
         untrained = evaluate(policy_plan(need_net, depot_net))
     print(f"untrained policy: {untrained}% on {len(EVAL_SEEDS)} held-out scenarios")
 
+    # Group-relative baseline (as in GRPO): each scenario is played `group` times, and every attempt is
+    # judged against the other attempts on the same scenario, so scenario difficulty cancels out.
     curve, seed, t0 = [], TRAIN_SEED_BASE, time.time()
-    for batch in range(args.episodes // args.batch):
-        returns, logp_sums = [], []
-        for _ in range(args.batch):
-            logps = []
-            returns.append(episode(seed, policy_plan(need_net, depot_net, logps)))
-            logp_sums.append(torch.stack(logps).sum() if logps else torch.zeros(()))
+    scenarios_per_batch = max(1, args.batch // args.group)
+    played = 0
+    for batch in range(args.episodes // (scenarios_per_batch * args.group)):
+        returns, logp_sums, adv = [], [], []
+        for _ in range(scenarios_per_batch):
+            group = []
+            for _ in range(args.group):
+                logps = []
+                group.append(episode(seed, policy_plan(need_net, depot_net, logps)))
+                logp_sums.append(torch.stack(logps).sum() if logps else torch.zeros(()))
+            g = torch.tensor(group)
+            adv.append(g - g.mean())
+            returns += group
             seed += 1
+        played += scenarios_per_batch * args.group
+        adv = torch.cat(adv)
+        adv = adv / (adv.std() + 1e-6)
         r = torch.tensor(returns)
-        adv = (r - r.mean()) / (r.std() + 1e-6)  # batch-mean baseline, normalised
         loss = -(adv * torch.stack(logp_sums)).mean()
         opt.zero_grad()
         loss.backward()
         opt.step()
         curve.append(round(float(r.clamp(min=0).mean()) * 100, 2))
         if batch % 25 == 0:
-            print(f"batch {batch:4d}  episodes {seed - TRAIN_SEED_BASE:6d}  mean score {curve[-1]:5.1f}%  "
+            print(f"batch {batch:4d}  episodes {played:6d}  mean score {curve[-1]:5.1f}%  "
                   f"{time.time() - t0:5.0f}s")
 
     with torch.no_grad():
         trained = evaluate(policy_plan(need_net, depot_net))
     weights = {"need": need_net.export(), "depot": depot_net.export(),
-               "meta": {"algorithm": "REINFORCE", "episodes": seed - TRAIN_SEED_BASE, "batch": args.batch,
-                        "hidden": 16, "eval_score": trained}}
+               "meta": {"algorithm": "REINFORCE, group-relative baseline", "episodes": played,
+                        "group": args.group, "batch": args.batch,
+                        "hidden": args.hidden, "eval_score": trained}}
     policy.WEIGHTS_PATH.write_text(json.dumps(weights), encoding="utf-8")
 
     # same evaluation for the rule-based strategies, and check the exported weights reproduce torch

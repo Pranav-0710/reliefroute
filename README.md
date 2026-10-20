@@ -6,11 +6,14 @@ ReliefRoute is a flood-relief logistics agent for Chennai. It takes a field repo
 - it detects when a route fails mid-delivery and replans
 - it scores the outcome and learns from it before the next run, including a dispatch policy trained with reinforcement learning (PyTorch) in an OpenEnv environment
 
+In live operations, field workers report from a phone page, reports pile up in an incident queue, the coordinator dispatches them in waves, and Gemini writes situation reports on demand.
+
 Built for the Agent Wars challenge at GDG DevFest 2026.
 
 | | |
 |---|---|
-| Live app | https://reliefroute.vercel.app |
+| Live app (coordinator console) | https://reliefroute.vercel.app |
+| Field reporter (phone page) | https://reliefroute.vercel.app/report |
 | MCP endpoint | https://reliefroute.vercel.app/mcp |
 | Health check | https://reliefroute.vercel.app/healthz |
 | Source | https://github.com/Pranav-0710/reliefroute |
@@ -60,12 +63,21 @@ flowchart LR
 
 ## Try it in three minutes
 
-1. Open https://reliefroute.vercel.app.
-2. Under **Training**, click **Run 5 episodes**. Click it a second time.
+The console has two tabs: **Operations** (a live relief operation) and **Simulator** (single scored episodes and training).
+
+**Operations**
+1. Open https://reliefroute.vercel.app/report on a phone, type a request (any language), optionally share your location, and send. Within 5 seconds it appears in the console's **Incident queue**, tagged `PHONE`.
+2. In the console, pick a sample report and click **Add to incident queue**. Add two or three.
+3. Tick **Simulate a road collapse in the next wave** and click **Dispatch wave**. Trucks serve what they can. A request whose road collapsed stays queued with a note.
+4. Untick the box and click **Dispatch wave** again. The collapsed road is remembered, so the request is served from another direction.
+5. Click **Situation report** for a coordinator briefing written by Gemini from the live data. You can copy it or download it as text.
+
+**Simulator**
+1. Under **Training**, click **Run 5 episodes**. Click it a second time.
    - The agent plays ten random flood scenarios.
    - Watch the **Performance** panel: score per episode, the change against the first five runs, and which strategy the bandit now prefers (`rl_policy` is the trained neural policy).
-3. Under **Field report**, click the **Tanglish** sample (or attach a photo, or record a voice note), then click **Dispatch**.
-4. Read the result:
+2. Pick the **Tanglish** sample (or attach a photo, or record a voice note), then click **Run full episode**.
+3. Read the result:
    - **Map:** orange dots are your report and blue dots are other open requests. Green lines are truck legs (depot to first stop, then stop to stop; hover for truck, stop number and arrival time). A red cross is the leg that broke; a dashed green line is the detour that replaced it.
    - **Event log:** each line is tagged with the stage that produced it.
 
@@ -80,6 +92,27 @@ flowchart LR
 | `FALLBACK` | An external service failed, so the agent used a local method (rules, distance estimate) |
 | `SCORE` | Outcome as a percentage of the best possible |
 | `LESSON` | A lesson written to memory for the next run |
+| `QUEUED`, `PHONE` | Incidents added to the operation from the console or from a phone |
+| `WAVE n`, `STATUS` | A dispatch wave in live operations and what is still waiting after it |
+
+## Live operations
+
+```mermaid
+flowchart LR
+    P["Phone page /report<br/>text, photo, voice, GPS"] --> I["Intake<br/>Gemini multimodal"]
+    C["Console<br/>Add to incident queue"] --> I
+    I --> Q[("Incident queue<br/>waiting / delivered")]
+    Q --> W["Dispatch wave<br/>best learned strategy"]
+    W --> T["Trucks<br/>capacity, multi-stop"]
+    T -->|"delivered"| Q
+    T -->|"blocked or no truck"| Q
+    Q --> S["Situation report<br/>Gemini, rule fallback"]
+```
+
+- **Reports** from the phone page and the console go through the same multimodal intake. Each recognised need becomes an incident with status `waiting`. When the phone shares GPS and the position is inside Chennai, it places the incident instead of the coordinates guessed from the text.
+- **A wave** plans one dispatch round over every waiting incident with the strategy that has the best learned score (usually `rl_policy`). Depot stock goes down with every delivery. Incidents become `delivered`, are partly served, or stay `waiting` with a note explaining why (road blocked, no truck space). A collapsed road is kept as a hazard, so later waves avoid it.
+- **The situation report** summarises the operation for a coordinator: headline, overview, priorities, blocked roads, stock alerts and recommended actions. Gemini writes it from the live data only. If Gemini is unavailable, a rule-based report with the same sections is produced instead.
+- **State** is one JSON document on the server. The coordinator's browser keeps a copy and restores it if a serverless instance restarts. The console polls every 5 seconds, so phone reports appear without a reload.
 
 ## Architecture
 
@@ -133,21 +166,34 @@ The request lifecycle, simulator rules, scoring formula, learning loop and every
 
 ## Reinforcement learning
 
-`rl/train_policy.py` trains a dispatch policy with REINFORCE (PyTorch) by playing simulated floods. In every round it makes two decisions with two small networks (one hidden layer of 16 units each):
-- **which request to load next**, which also sets the truck stop order
-- **which depot serves it**
+`rl/train_policy.py` trains a dispatch policy with REINFORCE (PyTorch) by playing simulated floods. In every round it makes two decisions with two small networks (one hidden layer of 24 units each):
+- **which request to load next**, which also sets each truck's stop order
+- **which depot serves it**, which also picks the truck
 
-The inputs are hand-built features: urgency, quantity, effective distance, whether the route is flooded, stock coverage and how scarce the item is. Training used 6,000 episodes (about 4 minutes on a laptop CPU). Evaluation uses 500 scenarios the policy never saw during training, all with the mid-delivery bridge collapse switched on:
+While deciding, the policy simulates the trucks exactly as the simulator loads them. Its features therefore see:
+- the real arrival time at each stop
+- the leg each truck would actually drive (previous stop to next stop) and whether that leg crosses a flood
+- the space left on the truck, stock coverage, and how scarce the item is
+
+Training uses a **group-relative baseline**, as in GRPO: each scenario is played 8 times, and every attempt is judged against the other attempts on the same scenario, so easy and hard scenarios no longer blur the signal. The run used 32,000 episodes on a laptop CPU.
+
+Evaluation uses 500 scenarios the policy never saw during training, all with the mid-delivery bridge collapse switched on:
 
 | Strategy | Average score on 500 held-out scenarios |
 |---|---|
-| Trained policy (`rl_policy`) | **80.2%** |
-| Same networks before training | 55.7% |
+| Trained policy (`rl_policy`) | **80.6%** |
+| Same networks before training | 78.0% |
 | `urgency_first` (best hand-written rule) | 80.0% |
 | `nearest_first` | 79.2% |
 | `fifo` (naive baseline) | 32.9% |
 
-From scratch, the policy learns to match the best hand-written rule: it goes from 55.7% to 80.2%. It does not yet clearly beat that rule. The exported weights reproduce the PyTorch result exactly (80.2%) in pure Python, and that is what the live app runs as the `rl_policy` strategy.
+Paired on the same 500 scenarios, the trained policy beats `urgency_first` by **+0.57 points (95% CI +0.33 to +0.81)**. It wins 155 scenarios, ties 238 and loses 107. The edge is small but statistically clear.
+
+How much room was there? Choosing the best of 40 sampled plans per scenario, with hindsight, reaches about 82.5% (measured on 100 of these scenarios). So the best hand-written rule was already close to the ceiling of this simulator.
+
+Most of the jump over the previous version (55.7% untrained, 80.2% trained) came from the truck-aware decision procedure itself: even untrained, it scores 78.0%.
+
+The exported weights reproduce the PyTorch result exactly (80.6%) in pure Python, and that is what the live app runs as the `rl_policy` strategy.
 
 ![Training curve](docs/rl_training.png)
 
@@ -155,7 +201,7 @@ To retrain:
 
 ```bash
 pip install -r requirements-train.txt
-python rl/train_policy.py --episodes 6000
+python rl/train_policy.py --episodes 32000 --batch 64 --group 8 --hidden 24 --lr 0.005
 ```
 
 This writes `policy_weights.json`, `rl/results.json` and `docs/rl_training.png`.
@@ -236,7 +282,7 @@ Open http://localhost:8080.
 pytest -q
 ```
 
-The 19 tests run without network access or an API key. The OpenEnv test is skipped if the `openenv` package isn't installed. They cover:
+The 21 tests run without network access or an API key. The OpenEnv test is skipped if the `openenv` package isn't installed. They cover:
 - the simulator contract and truck rules: capacity, stop order, arrival times, a full fleet
 - recovery after a blocked route
 - guardrail repair
@@ -249,6 +295,12 @@ The 19 tests run without network access or an API key. The OpenEnv test is skipp
 - keyword intake
 - the MCP handshake and tool calls
 - the OpenEnv environment and server
+- live operations:
+  - phone reports placed by GPS
+  - waves updating stock and statuses
+  - collapsed roads persisting
+  - restore from the browser copy
+  - the situation report fallback
 - the full web flow
 
 ## Use it from another agent (MCP)
@@ -301,8 +353,27 @@ reliefroute = McpToolset(connection_params=StreamableHTTPConnectionParams(url="h
 | `GET` | `/api/memory` | Current memory |
 | `POST` | `/api/memory/reset` | Clear memory |
 | `POST` | `/mcp` | MCP JSON-RPC endpoint |
+| `GET` | `/report` | Field reporter phone page |
+| `POST` | `/api/reports` | Multipart form: `text`, optional `image`, `audio`, `lat`, `lng`, `source`. Adds incidents to the operation. |
+| `GET` | `/api/ops` | Operation state and summary figures |
+| `POST` | `/api/ops/wave` | JSON `{"chaos": false}`. Dispatches one wave over all waiting incidents. Returns 409 if nothing is waiting. |
+| `POST` | `/api/ops/sitrep` | Situation report as text plus structured sections |
+| `POST` | `/api/ops/sync` | Restores an operation from the browser's copy after a server restart |
+| `POST` | `/api/ops/reset` | Starts a new operation: empty queue, restocked depots |
 
-The public deployment limits each client address to 8 dispatches, 60 training requests, 10 costly MCP tool calls and 5 memory resets per 10 minutes. Over the limit, the server returns HTTP 429 with a `Retry-After` header.
+Each client address is limited, per 10 minutes, to:
+
+| Action | Limit |
+|---|---|
+| Single-episode dispatches | 8 |
+| Field reports | 12 |
+| Waves | 30 |
+| Situation reports | 6 |
+| Training requests | 60 |
+| Costly MCP tool calls | 10 |
+| Resets | 5 |
+
+Over a limit, the server returns HTTP 429 with a `Retry-After` header.
 
 ## Repository layout
 
@@ -316,7 +387,9 @@ The public deployment limits each client address to 8 dispatches, 60 training re
 | `relief_openenv/` | The simulator as an OpenEnv environment: models, server, client, manifest, Dockerfile |
 | `main.py` | FastAPI server: web app, REST API, MCP route, rate limits |
 | `mcp_server.py` | MCP protocol handling and tool definitions |
-| `static/index.html` | The operations console (single file, no build step) |
+| `ops.py` | Live operations: incident queue, dispatch waves, browser restore, situation reports |
+| `static/index.html` | The coordinator console with Operations and Simulator tabs (single file, no build step) |
+| `static/report.html` | The field reporter phone page |
 | `test_app.py` | Automated tests |
 | `Dockerfile` | Container image for Cloud Run or any container host |
 | `docs/architecture.md` | Diagrams and technical reference |
@@ -344,7 +417,7 @@ gcloud run deploy reliefroute --source . --region asia-south1 --allow-unauthenti
 - **The scenario data is simulated.** Depot stock, the other requests, flood zones and the bridge collapse are all simulated. Locations are real Chennai localities with approximate coordinates. Distances are straight-line multiplied by a 1.3 road factor, not a road network.
 - **Memory is not durable.** It is a JSON file on the serverless instance, plus a copy in each browser. It is not reliably shared between instances or users. A production version would store it in Firestore.
 - **The RL policy is trained offline and is small.** Its weights are updated in training, not while the app runs; online learning is the bandit and the Gemini lessons. It matches the best hand-written rule rather than clearly beating it. Gemini itself is not fine-tuned.
-- **There is no authentication.** Anyone with the link can run dispatches and reset memory. Per-address rate limits and a daily Gemini budget cap the damage, but both are kept per server instance. The MCP server is minimal: tools only, no sessions or streaming.
+- **There is no authentication.** Anyone with the link can submit field reports, dispatch waves and reset the operation or memory. Operation state, like memory, lives on one serverless instance plus the coordinator's browser. Per-address rate limits and a daily Gemini budget cap the damage, but both are kept per server instance. The MCP server is minimal: tools only, no sessions or streaming.
 
 ## Next steps
 

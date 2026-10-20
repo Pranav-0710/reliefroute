@@ -67,7 +67,7 @@ class ReliefEnv:
         self._rng = random.Random()
 
     # ---- OpenEnv contract -------------------------------------------------
-    def reset(self, seed=None, extra_needs=None, extra_hazards=None, chaos=True, n_needs=5):
+    def reset(self, seed=None, extra_needs=None, extra_hazards=None, chaos=True, n_needs=5, random_hazards=True):
         rng = self._rng = random.Random(seed)
         depots = [{"id": i, "name": n, "lat": la, "lng": lo,
                    "stock": {it: rng.randint(60, 260) for it in ITEMS},
@@ -81,17 +81,17 @@ class ReliefEnv:
                           "item": rng.choice(ITEMS), "qty": rng.randint(30, 150),
                           "urgency": rng.randint(1, 5), "source": "sim"})
         for k, n in enumerate(extra_needs or []):
-            needs.append({**n, "id": f"R{k + 1}", "source": "field"})
+            needs.append({**n, "id": n.get("id") or f"R{k + 1}", "source": "field"})  # live incidents keep their ids
         hazards = []
-        for k in range(rng.randint(1, 2)):
+        for k in range(rng.randint(1, 2) if random_hazards else 0):
             zone, la, lo = rng.choice(ZONES)
             hazards.append({"id": f"H{k + 1}", "label": f"Flooded road near {zone}",
                             "lat": la + 0.012, "lng": lo + 0.012, "radius_km": 1.0, "known": True})
         for h in extra_hazards or []:
             hazards.append({"id": f"H{len(hazards) + 1}", "label": h.get("label", "Field-reported hazard"),
-                            "lat": h["lat"], "lng": h["lng"], "radius_km": 0.8, "known": True})
+                            "lat": h["lat"], "lng": h["lng"], "radius_km": h.get("radius_km", 0.8), "known": True})
         for n in needs:
-            n["requested"] = n["qty"]
+            n["requested"] = n.get("requested") or n["qty"]  # partly served incidents keep their original size
         self._s = {"seed": seed, "step": 0, "depots": depots, "needs": needs, "hazards": hazards,
                    "pending": [n["id"] for n in needs], "deliveries": [], "events": [],
                    "total_reward": 0.0, "done": False, "chaos": chaos,

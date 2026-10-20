@@ -49,6 +49,22 @@
   .btn:disabled { opacity:.5; cursor:progress; }
   .btn .rec { width:8px; height:8px; border-radius:50%; background:var(--red); }
   .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:10px; }
+  .modes { display:grid; grid-template-columns:1fr 1fr; border:1px solid var(--line); border-radius:6px; overflow:hidden; margin-bottom:18px; }
+  .mode { background:none; border:0; padding:8px; font:500 13px var(--sans); color:var(--muted); cursor:pointer; }
+  .mode.on { background:var(--panel); color:var(--text); box-shadow:inset 0 -2px 0 var(--text); }
+  body[data-mode="ops"] [data-show="sim"], body[data-mode="sim"] [data-show="ops"] { display:none; }
+  .opsfig { font:12px var(--mono); color:var(--muted); margin:-4px 0 8px; }
+  .opsfig b { color:var(--text); font-weight:500; }
+  #queueList { max-height:300px; overflow:auto; margin-bottom:4px; }
+  .inc { border-left:3px solid var(--amber); padding:6px 9px; margin:5px 0; background:var(--panel); border-radius:4px; font-size:13px; }
+  .inc.delivered { border-color:var(--green); opacity:.7; }
+  .inc .meta { color:var(--muted); font-size:12px; }
+  .inc .id { font-family:var(--mono); color:var(--muted); margin-right:4px; }
+  dialog { background:var(--panel); color:var(--text); border:1px solid var(--line-2); border-radius:8px; padding:0; width:min(680px, 92vw); }
+  dialog::backdrop { background:#000a; }
+  dialog .dhead { display:flex; justify-content:space-between; align-items:center; padding:12px 16px; border-bottom:1px solid var(--line); }
+  dialog pre { margin:0; padding:16px; max-height:60vh; overflow:auto; white-space:pre-wrap; font:13px/1.55 var(--mono); }
+  dialog .dfoot { display:flex; gap:8px; justify-content:flex-end; padding:12px 16px; border-top:1px solid var(--line); }
   #attached { font:12px var(--mono); color:var(--muted); margin-top:6px; min-height:18px; }
   #attached a { color:var(--muted); margin-left:6px; cursor:pointer; text-decoration:underline; }
   .check { display:flex; gap:8px; align-items:flex-start; font-size:13px; margin:14px 0; cursor:pointer; }
@@ -106,6 +122,10 @@
 </header>
 <main>
   <section>
+    <div class="modes" role="tablist">
+      <button class="mode" role="tab" data-mode="ops">Operations</button>
+      <button class="mode" role="tab" data-mode="sim">Simulator</button>
+    </div>
     <div class="block">
       <h2>Field report</h2>
       <div class="samples"><span>Try a sample report</span>
@@ -121,10 +141,28 @@
         <button class="btn" id="rec" type="button">Record</button>
       </div>
       <div id="attached"></div>
-      <label class="check"><input type="checkbox" id="chaos" checked><span>Simulate a road collapse during delivery<br><span class="hint">Tests whether the agent detects the failure and reroutes.</span></span></label>
-      <button class="btn primary" id="go">Dispatch</button>
+      <div data-show="ops">
+        <button class="btn primary" id="queue" style="margin-top:14px">Add to incident queue</button>
+        <p class="hint" style="margin-top:8px">Field workers can report from a phone at <a href="/report" target="_blank" class="num" style="color:var(--text)">/report</a>. Their reports appear in the queue below.</p>
+      </div>
+      <div data-show="sim">
+        <label class="check"><input type="checkbox" id="chaos" checked><span>Simulate a road collapse during delivery<br><span class="hint">Tests whether the agent detects the failure and reroutes.</span></span></label>
+        <button class="btn primary" id="go">Run full episode</button>
+        <p class="hint" style="margin-top:8px">Plays this report inside a fresh simulated scenario with other open requests, then scores and learns.</p>
+      </div>
     </div>
-    <div class="block">
+    <div class="block" data-show="ops">
+      <h2>Incident queue</h2>
+      <div class="opsfig" id="opsfig"></div>
+      <div id="queueList"><div class="hint">No incidents yet. Add a report above or send one from /report.</div></div>
+      <label class="check"><input type="checkbox" id="opsChaos"><span>Simulate a road collapse in the next wave</span></label>
+      <button class="btn primary" id="wave">Dispatch wave</button>
+      <div class="row">
+        <button class="btn" id="sitrep">Situation report</button>
+        <button class="btn" id="opsReset">New operation</button>
+      </div>
+    </div>
+    <div class="block" data-show="sim">
       <h2>Training</h2>
       <p class="hint">Plays simulated flood scenarios in the OpenEnv environment. Every run is scored; the bandit and the lesson memory update. <span class="num">rl_policy</span> is a neural policy trained offline with reinforcement learning (PyTorch).</p>
       <div class="row">
@@ -180,6 +218,15 @@
     </div>
   </section>
 </main>
+<dialog id="sitrepDlg" aria-labelledby="sitrepTitle">
+  <div class="dhead"><h2 id="sitrepTitle" style="margin:0">Situation report</h2><span class="hint" id="sitrepBy"></span></div>
+  <pre id="sitrepText"></pre>
+  <div class="dfoot">
+    <button class="btn" id="sitrepCopy">Copy</button>
+    <button class="btn" id="sitrepDownload">Download .txt</button>
+    <button class="btn" id="sitrepClose">Close</button>
+  </div>
+</dialog>
 <script>
 const $ = id => document.getElementById(id);
 const B = { latMin: 12.95, latMax: 13.24, lngMin: 80.13, lngMax: 80.35 };
@@ -285,10 +332,10 @@ function updateAI(heals) {
 
 // ---- pipeline ------------------------------------------------------------------------
 function pipeBusy() { $("pipe").classList.add("busy"); [...$("pipe").children].forEach(s => s.classList.remove("on")); }
-async function pipeRun(disrupted) {
+async function pipeRun(disrupted, last = 6) {
   $("pipe").classList.remove("busy");
   for (const [i, s] of [...$("pipe").children].entries()) {
-    if ((i === 3 || i === 4) && !disrupted) continue;
+    if (((i === 3 || i === 4) && !disrupted) || i > last) continue;
     s.classList.add("on"); await sleep(260);
   }
 }
@@ -448,13 +495,155 @@ async function api(path, opts) {
   return r.json();
 }
 
+// ---- live operations ------------------------------------------------------------------------------
+const OPS_KEY = "reliefroute-ops";
+let ops = null, opsDepots = null, opsBusy = false, opsSeen = null;
+try { ops = JSON.parse(localStorage.getItem(OPS_KEY)); } catch { ops = null; }
+const mins = ts => Math.max(0, Math.round((Date.now() / 1000 - ts) / 60));
+const postJSON = (path, body) => api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+
+function setMode(m) {
+  document.body.dataset.mode = m;
+  document.querySelectorAll(".mode").forEach(b => { b.classList.toggle("on", b.dataset.mode === m); b.setAttribute("aria-selected", b.dataset.mode === m); });
+  try { localStorage.setItem("reliefroute-mode", m); } catch {}
+  if (m === "ops") refreshOps(); else api("/api/scenario").then(drawMap).catch(() => {});
+}
+document.querySelectorAll(".mode").forEach(b => b.onclick = () => setMode(b.dataset.mode));
+
+function renderOps(st, s) {
+  ops = st;
+  try { localStorage.setItem(OPS_KEY, JSON.stringify(st)); } catch {}
+  $("opsfig").innerHTML = `<b>${s.waiting}</b> waiting · <b>${s.delivered}</b> delivered · <b>${s.units_delivered}</b> units · longest wait <b>${s.longest_wait_min}</b> min`;
+  const rank = i => (i.status === "waiting" ? 0 : 1);
+  const list = [...st.incidents].sort((a, b) => rank(a) - rank(b) || (rank(a) ? b.reported_at - a.reported_at : b.urgency - a.urgency || a.reported_at - b.reported_at));
+  $("queueList").innerHTML = list.length ? list.slice(0, 60).map(i =>
+    `<div class="inc ${i.status}"><div><span class="id">${esc(i.id)}</span><b>${esc(i.zone)}</b> · ${i.status === "waiting" && i.qty !== i.requested ? `${i.qty} of ` : ""}${i.requested} ${esc(i.item)} · U${i.urgency}</div>` +
+    `<div class="meta">${i.status === "waiting" ? `waiting ${mins(i.reported_at)} min` : "delivered"} · ${esc(i.source)}${i.located_by === "gps" ? " (GPS)" : ""}${i.note ? " · " + esc(i.note) : ""}</div></div>`).join("")
+    : '<div class="hint">No incidents yet. Add a report above or send one from /report.</div>';
+  if (document.body.dataset.mode === "ops" && !opsBusy) drawOpsMap();
+}
+
+function drawOpsMap(wave) {
+  if (!ops || !opsDepots) return;
+  const depots = opsDepots.map(d => ({ ...d, stock: ops.stock[d.id] || d.stock }));
+  const inWave = new Set(wave ? wave.trace[0].action.map(a => a.need_id) : []);
+  const needs = ops.incidents.filter(i => i.status === "waiting" || inWave.has(i.id))
+    .map(i => ({ id: i.id, zone: i.zone, lat: i.lat, lng: i.lng, item: i.item, requested: i.requested, urgency: i.urgency, source: "field" }));
+  drawMap({ initial: { depots, needs }, hazards: ops.hazards, trace: wave ? wave.trace : [], deliveries: wave ? wave.deliveries : [], unmet: [] });
+}
+
+async function refreshOps() {
+  try {
+    const r = await api("/api/ops");
+    if (ops && ops.version > r.ops.version) {  // server restarted and lost the operation: restore this browser's copy
+      const s = await postJSON("/api/ops/sync", { ops });
+      return renderOps(s.ops, s.summary);
+    }
+    const fresh = opsSeen ? r.ops.incidents.filter(i => !opsSeen.has(i.id)) : [];
+    opsSeen = new Set(r.ops.incidents.map(i => i.id));
+    for (const i of fresh.filter(i => i.source === "phone"))
+      ev("PHONE", "intake", `${esc(i.id)} ${esc(i.zone)} · ${i.qty} ${esc(i.item)} · urgency ${i.urgency}${i.located_by === "gps" ? " · placed by GPS" : ""}<div class="sub">${esc(i.summary)}</div>`);
+    renderOps(r.ops, r.summary);
+  } catch {}
+}
+
+function attachMedia(fd) {
+  if ($("image").files[0]) fd.append("image", $("image").files[0]);
+  if ($("audio").files[0]) fd.append("audio", $("audio").files[0]);
+  else if (recBlob) fd.append("audio", recBlob, recBlob.type === "audio/wav" ? "voice.wav" : "voice.webm");
+}
+
+$("queue").onclick = async () => {
+  const fd = new FormData();
+  fd.append("text", $("text").value);
+  fd.append("source", "console");
+  attachMedia(fd);
+  $("queue").disabled = true; $("queue").textContent = "Reading report…"; pipeBusy();
+  $("log").innerHTML = '<div class="empty">Reading the report…</div>';
+  try {
+    const r = await api("/api/reports", { method: "POST", body: fd });
+    $("log").innerHTML = "";
+    ev("INTAKE", "intake", `${esc(r.intake.summary)} <span class="sub">· ${esc(r.intake.language)}</span>` +
+      (r.intake.hazards.length ? `<div class="sub">Hazards: ${r.intake.hazards.map(h => esc(h.label)).join(", ")}</div>` : ""));
+    ev("QUEUED", "good", r.incidents.map(i => `<div class="num">${esc(i.id)} ${esc(i.zone)} · ${i.qty} ${esc(i.item)} · urgency ${i.urgency}</div>`).join("") || "No supplies recognised in this report.");
+    for (const h of r.heals) { const [tag, cls] = healTag(h); ev(tag, cls, esc(h)); }
+    if (opsSeen) r.incidents.forEach(i => opsSeen.add(i.id));
+    renderOps(r.ops, r.summary); updateAI(r.heals);
+    $("image").value = ""; $("audio").value = ""; recBlob = null; showAttached();
+    $("pipe").classList.remove("busy"); [...$("pipe").children].forEach((s, k) => s.classList.toggle("on", k === 0));
+  } catch (e) { $("pipe").classList.remove("busy"); $("log").innerHTML = ""; ev("ERROR", "bad", esc(e.message)); }
+  finally { $("queue").disabled = false; $("queue").textContent = "Add to incident queue"; }
+};
+
+function legLines(info) {
+  return info.delivered.map(d => `<div class="sub num">${d.need_id} ← ${d.truck_id} #${d.stop}  ${d.qty} ${d.item}  ${d.km} km  arrives ${d.minutes} min${d.detour ? "  detour" : ""}</div>`).join("") +
+    info.blocked.map(b => `<div class="num" style="color:var(--red)">${b.need_id} ← ${b.truck_id || b.depot_id}  blocked by ${b.hazards.join(", ")}</div>`).join("") +
+    (info.no_truck || []).map(b => `<div class="num" style="color:var(--amber)">${b.need_id} ← ${b.depot_id}  no truck capacity left this wave</div>`).join("");
+}
+
+$("wave").onclick = async () => {
+  opsBusy = true; $("wave").disabled = true; $("wave").textContent = "Planning wave…"; pipeBusy();
+  try {
+    const r = await postJSON("/api/ops/wave", { chaos: $("opsChaos").checked, ops });
+    const w = r.wave, t = r.trace[0];
+    opsBusy = false;
+    renderOps(r.ops, r.summary); drawOpsMap(r);
+    $("log").innerHTML = "";
+    ev(`WAVE ${w.n}`, w.blocked ? "bad" : "good", `<span class="sub">${esc(w.strategy)}</span> · ${esc(t.reasoning)}${legLines(t.info)}`);
+    for (const h of r.heals) { const [tag, cls] = healTag(h); ev(tag, cls, esc(h.replace(/^ALERT\s*/, ""))); }
+    ev("STATUS", r.unmet.length ? "bad" : "good", `${w.delivered} deliveries · ${w.units} units this wave · ${r.unmet.length} incident(s) still waiting`);
+    updateAI(r.heals);
+    await pipeRun(t.info.blocked.length || t.info.new_hazards.length, 4);
+  } catch (e) { $("pipe").classList.remove("busy"); ev("ERROR", "bad", esc(e.message)); }
+  finally { opsBusy = false; $("wave").disabled = false; $("wave").textContent = "Dispatch wave"; }
+};
+
+$("sitrep").onclick = async () => {
+  $("sitrep").disabled = true; $("sitrep").textContent = "Writing…";
+  try {
+    const r = await api("/api/ops/sitrep", { method: "POST" });
+    $("sitrepText").textContent = r.text;
+    $("sitrepBy").textContent = r.generated_by === "gemini" ? "Written by Gemini from live data" : "Rule-based fallback";
+    for (const h of r.heals) { const [tag, cls] = healTag(h); ev(tag, cls, esc(h)); }
+    updateAI(r.heals);
+    $("sitrepDlg").showModal();
+  } catch (e) { ev("ERROR", "bad", esc(e.message)); }
+  finally { $("sitrep").disabled = false; $("sitrep").textContent = "Situation report"; }
+};
+$("sitrepCopy").onclick = async () => {
+  try { await navigator.clipboard.writeText($("sitrepText").textContent); $("sitrepCopy").textContent = "Copied"; }
+  catch { $("sitrepCopy").textContent = "Copy failed"; }
+  setTimeout(() => { $("sitrepCopy").textContent = "Copy"; }, 1500);
+};
+$("sitrepDownload").onclick = () => {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([$("sitrepText").textContent], { type: "text/plain" }));
+  a.download = `reliefroute-sitrep-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-")}.txt`;
+  a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+};
+$("sitrepClose").onclick = () => $("sitrepDlg").close();
+
+$("opsReset").onclick = async () => {
+  if (!confirm("Start a new operation? This clears the incident queue and hazards and restocks every depot.")) return;
+  try {
+    const r = await api("/api/ops/reset", { method: "POST" });
+    opsSeen = new Set(); renderOps(r.ops, r.summary); drawOpsMap();
+    $("log").innerHTML = '<div class="empty">New operation started. Depots restocked.</div>';
+  } catch (e) { ev("ERROR", "bad", esc(e.message)); }
+};
+
+setInterval(() => { if (document.body.dataset.mode === "ops" && !opsBusy && !document.hidden) refreshOps(); }, 5000);
+
 // ---- startup ------------------------------------------------------------------------------------
 api("/healthz").then(h => {
   aiModel = h.models[0];
   if (h.llm) setAI(0, `Gemini · ${aiModel}`); else setAI(2, "AI key missing · rule-based backup");
 }).catch(() => setAI(2, "Server unreachable"));
 api("/api/memory").then(m => renderMemory(localMem && localMem.episodes && localMem.episodes.length > m.episodes.length ? localMem : m)).catch(() => {});
-api("/api/scenario").then(drawMap).catch(() => { $("map").innerHTML = baseMap(); });
+let startMode = "ops";
+try { startMode = localStorage.getItem("reliefroute-mode") || "ops"; } catch {}
+api("/api/scenario").then(s => { opsDepots = s.initial.depots; setMode(startMode); })
+  .catch(() => { $("map").innerHTML = baseMap(); setMode(startMode); });
 </script>
 </body>
 </html>

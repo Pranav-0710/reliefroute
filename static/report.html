@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#f6f5f2">
+<title>ReliefRoute field report</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%23111315'/><path d='M8 23 L15 14 L24 9' stroke='%235fb37f' stroke-width='3' fill='none' stroke-linecap='round'/><circle cx='24' cy='9' r='3.2' fill='%23e3a33b'/></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  /* Light, high-contrast theme: field reports are sent outdoors, often in bright light. */
+  :root { --bg:#f6f5f2; --card:#ffffff; --line:#d9d6cf; --text:#17191c; --muted:#5b6068;
+          --ok:#1f7a4d; --warn:#9a5b00; --bad:#b42318; --accent:#17191c; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:17px/1.5 "IBM Plex Sans", system-ui, sans-serif;
+         padding:16px 16px calc(24px + env(safe-area-inset-bottom)); }
+  main { max-width:520px; margin:0 auto; }
+  h1 { font-size:20px; margin:4px 0 2px; }
+  .sub { color:var(--muted); font-size:14px; margin:0 0 16px; }
+  label.field { display:block; font-weight:600; margin:0 0 6px; }
+  textarea { width:100%; min-height:150px; font:inherit; padding:12px; border:2px solid var(--line); border-radius:10px;
+             background:var(--card); color:var(--text); resize:vertical; }
+  textarea:focus { outline:none; border-color:var(--text); }
+  .hint { color:var(--muted); font-size:14px; margin:6px 0 0; }
+  .grid { display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; margin:14px 0; }
+  .tile { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px; min-height:76px;
+          border:2px solid var(--line); border-radius:10px; background:var(--card); font:600 15px "IBM Plex Sans", sans-serif;
+          color:var(--text); cursor:pointer; text-align:center; padding:8px; }
+  .tile small { font-weight:400; color:var(--muted); font-size:12.5px; }
+  .tile.on { border-color:var(--ok); }
+  .tile.on small { color:var(--ok); }
+  .tile.rec { border-color:var(--bad); }
+  .tile.rec small { color:var(--bad); }
+  button.send { width:100%; min-height:56px; border:0; border-radius:10px; background:var(--accent); color:#fff;
+                font:600 18px "IBM Plex Sans", sans-serif; cursor:pointer; }
+  button.send:disabled { opacity:.55; }
+  .card { background:var(--card); border:2px solid var(--line); border-radius:10px; padding:14px; margin-top:16px; }
+  .card.ok { border-color:var(--ok); } .card.bad { border-color:var(--bad); }
+  .card h2 { font-size:17px; margin:0 0 6px; }
+  .card ul { margin:6px 0 0; padding-left:20px; }
+  .card button { margin-top:12px; min-height:46px; width:100%; border:2px solid var(--text); background:none;
+                 border-radius:10px; font:600 16px "IBM Plex Sans", sans-serif; cursor:pointer; color:var(--text); }
+  footer { margin-top:22px; color:var(--muted); font-size:13px; }
+  footer a { color:var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Field report</h1>
+  <p class="sub">ReliefRoute · Chennai flood relief. Your report goes straight to the coordination desk.</p>
+
+  <form id="form">
+    <label class="field" for="text">What is needed, how many people, where?</label>
+    <textarea id="text" placeholder="Example: Velachery, 3rd street: 40 families, need drinking water and medicine. Road to Saidapet is flooded."></textarea>
+    <p class="hint">Any language is fine: English, தமிழ், Tanglish, हिन्दी. A photo or voice note works too.</p>
+
+    <div class="grid">
+      <label class="tile" id="photoTile"><input type="file" id="photo" accept="image/*" capture="environment" hidden>Photo<small id="photoState">Camera</small></label>
+      <button type="button" class="tile" id="recTile">Voice<small id="recState">Tap to record</small></button>
+      <button type="button" class="tile" id="gpsTile">Location<small id="gpsState">Share GPS</small></button>
+    </div>
+
+    <button class="send" id="send" type="submit">Send report</button>
+  </form>
+
+  <div id="result"></div>
+
+  <footer>Location is used only to place your report on the dispatch map. <a href="/">Coordinator console</a></footer>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const DRAFT = "reliefroute-report-draft";
+let recBlob = null, recorder = null, coords = null;
+
+try { $("text").value = localStorage.getItem(DRAFT) || ""; } catch {}
+$("text").addEventListener("input", () => { try { localStorage.setItem(DRAFT, $("text").value); } catch {} });
+
+$("photo").onchange = () => {
+  const f = $("photo").files[0];
+  $("photoTile").classList.toggle("on", !!f);
+  $("photoState").textContent = f ? "Attached" : "Camera";
+};
+
+$("gpsTile").onclick = () => {
+  if (!navigator.geolocation) { $("gpsState").textContent = "Not available"; return; }
+  $("gpsState").textContent = "Locating…";
+  navigator.geolocation.getCurrentPosition(p => {
+    coords = { lat: p.coords.latitude, lng: p.coords.longitude };
+    $("gpsTile").classList.add("on");
+    $("gpsState").textContent = `±${Math.round(p.coords.accuracy)} m`;
+  }, () => { coords = null; $("gpsTile").classList.remove("on"); $("gpsState").textContent = "Not shared"; },
+  { enableHighAccuracy: true, timeout: 15000 });
+};
+
+// Browsers record webm/ogg; Gemini reliably accepts WAV, so convert to 16 kHz mono PCM.
+async function toWav(blob) {
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  try {
+    const buf = await ctx.decodeAudioData(await blob.arrayBuffer());
+    const rate = 16000, off = new OfflineAudioContext(1, Math.ceil(buf.duration * rate), rate);
+    const src = off.createBufferSource(); src.buffer = buf; src.connect(off.destination); src.start();
+    const data = (await off.startRendering()).getChannelData(0);
+    const v = new DataView(new ArrayBuffer(44 + data.length * 2));
+    const str = (o, s) => [...s].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
+    str(0, "RIFF"); v.setUint32(4, 36 + data.length * 2, true); str(8, "WAVE"); str(12, "fmt ");
+    v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, rate, true);
+    v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+    str(36, "data"); v.setUint32(40, data.length * 2, true);
+    data.forEach((x, i) => v.setInt16(44 + i * 2, Math.max(-1, Math.min(1, x)) * 0x7fff, true));
+    return new Blob([v], { type: "audio/wav" });
+  } finally { ctx.close(); }
+}
+
+$("recTile").onclick = async () => {
+  if (recorder && recorder.state === "recording") { recorder.stop(); return; }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const chunks = []; recorder = new MediaRecorder(stream);
+    recorder.ondataavailable = e => chunks.push(e.data);
+    recorder.onstop = async () => {
+      stream.getTracks().forEach(t => t.stop());
+      const raw = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+      try { recBlob = await toWav(raw); } catch { recBlob = raw; }
+      $("recTile").classList.remove("rec"); $("recTile").classList.add("on");
+      $("recState").textContent = `${Math.max(1, Math.round(recBlob.size / 32000))} s recorded`;
+    };
+    recorder.start();
+    $("recTile").classList.remove("on"); $("recTile").classList.add("rec"); $("recState").textContent = "Recording · tap to stop";
+  } catch { $("recState").textContent = "Mic blocked"; }
+};
+
+function show(cls, html) { $("result").innerHTML = `<div class="card ${cls}">${html}</div>`; $("result").scrollIntoView({ behavior: "smooth" }); }
+
+$("form").onsubmit = async e => {
+  e.preventDefault();
+  if (recorder && recorder.state === "recording") { show("bad", "<h2>Stop the recording first</h2>"); return; }
+  const fd = new FormData();
+  fd.append("text", $("text").value);
+  fd.append("source", "phone");
+  if (coords) { fd.append("lat", coords.lat); fd.append("lng", coords.lng); }
+  if ($("photo").files[0]) fd.append("image", $("photo").files[0]);
+  if (recBlob) fd.append("audio", recBlob, recBlob.type === "audio/wav" ? "voice.wav" : "voice.webm");
+  $("send").disabled = true; $("send").textContent = "Sending…";
+  try {
+    const r = await fetch("/api/reports", { method: "POST", body: fd });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(body.detail || `Server error ${r.status}`);
+    const items = body.incidents.map(i => `<li>${esc(i.zone)}: ${i.qty} ${esc(i.item)}, urgency ${i.urgency}${i.located_by === "gps" ? " · placed by GPS" : ""}</li>`).join("");
+    show("ok", `<h2>Received · ${body.incidents.length} request(s) queued</h2>` +
+      (items ? `<ul>${items}</ul>` : `<p>No specific supplies were recognised. The desk can still read your message.</p>`) +
+      (body.intake.hazards.length ? `<p>Road hazards noted: ${body.intake.hazards.map(h => esc(h.label)).join(", ")}</p>` : "") +
+      `<button type="button" id="again">Send another report</button>`);
+    try { localStorage.removeItem(DRAFT); } catch {}
+    $("again").onclick = () => {
+      $("form").reset(); $("text").value = ""; recBlob = null; coords = null; $("result").innerHTML = "";
+      ["photoTile", "recTile", "gpsTile"].forEach(id => $(id).classList.remove("on"));
+      $("photoState").textContent = "Camera"; $("recState").textContent = "Tap to record"; $("gpsState").textContent = "Share GPS";
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    };
+  } catch (err) {
+    show("bad", `<h2>Not sent</h2><p>${esc(err.message)}</p><p>Your text is saved on this phone. Try again when you have signal.</p>`);
+  } finally { $("send").disabled = false; $("send").textContent = "Send report"; }
+};
+</script>
+</body>
+</html>

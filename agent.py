@@ -387,6 +387,27 @@ def reflect(trace, total, strategy, heals, lessons):
 
 
 # ---- full episode -------------------------------------------------------------
+def plan_round(obs, strategy, lessons, heals):
+    """One round of assignments with the given strategy; any planner failure heals to urgency_first."""
+    try:
+        if strategy == "llm":
+            return llm_plan(obs, lessons, heals)
+        return heuristic_plan(obs, strategy), STRATEGY_NOTES[strategy]
+    except Exception as e:
+        heals.append(f"Planner crashed ({str(e)[:80]}) -> urgency_first fallback")
+        return heuristic_plan(obs, "urgency_first"), "Fallback: " + STRATEGY_NOTES["urgency_first"]
+
+
+def best_strategy(mem):
+    """Strategy with the best learned average score; for live operations, so no exploration."""
+    usable = [s for s in STRATEGIES if s != "fifo" and (s != "llm" or llm_available())
+              and (s != "rl_policy" or policy.available())]
+    tried = [s for s in usable if mem["bandit"][s]["n"]]
+    if tried:
+        return max(tried, key=lambda s: mem["bandit"][s]["mean"])
+    return "rl_policy" if policy.available() else ("llm" if llm_available() else "urgency_first")
+
+
 def run_episode(seed=None, extra_needs=None, extra_hazards=None, chaos=True, strategy=None,
                 use_maps=False, explore=True):
     env = ReliefEnv()
@@ -399,14 +420,7 @@ def run_episode(seed=None, extra_needs=None, extra_hazards=None, chaos=True, str
     initial = {"depots": obs["depots"], "needs": [dict(n) for n in obs["pending_needs"]]}
     trace, heals = [], []
     while True:
-        try:
-            if strategy == "llm":
-                action, why = llm_plan(obs, mem["lessons"], heals)
-            else:
-                action, why = heuristic_plan(obs, strategy), STRATEGY_NOTES[strategy]
-        except Exception as e:
-            heals.append(f"Planner crashed ({str(e)[:80]}) -> urgency_first fallback")
-            action, why = heuristic_plan(obs, "urgency_first"), "Fallback: " + STRATEGY_NOTES["urgency_first"]
+        action, why = plan_round(obs, strategy, mem["lessons"], heals)
         res = env.step({"assignments": action})
         info = res["info"]
         for h in info["new_hazards"]:

@@ -12,6 +12,7 @@ from starlette.concurrency import run_in_threadpool
 
 import agent
 import mcp_server
+import ops
 
 app = FastAPI(title="ReliefRoute")
 STATIC = Path(__file__).parent / "static"
@@ -19,7 +20,8 @@ STATIC = Path(__file__).parent / "static"
 # ---- rate limits ----------------------------------------------------------------------
 # Per client IP, sliding window, per server instance. Protects the shared Gemini quota and memory
 # of a public deployment; not a substitute for authentication.
-LIMITS = {"dispatch": (8, 600), "train": (60, 600), "mcp": (10, 600), "reset": (5, 600)}  # (requests, seconds)
+LIMITS = {"dispatch": (8, 600), "train": (60, 600), "mcp": (10, 600), "reset": (5, 600),  # (requests, seconds)
+          "report": (12, 600), "wave": (30, 600), "sitrep": (6, 600)}
 MCP_COSTLY_TOOLS = {"dispatch_relief", "parse_field_report", "train_agent"}
 _hits: dict[tuple[str, str], list[float]] = {}
 _hits_lock = threading.Lock()
@@ -111,6 +113,78 @@ def memory_reset(request: Request):
     check_rate(request, "reset")
     agent.reset_memory()
     return agent.load_memory()
+
+
+# ---- live operations ---------------------------------------------------------------------
+class WaveReq(BaseModel):
+    chaos: bool = False
+    ops: dict | None = None  # coordinator's browser copy, restores the operation after a cold start
+
+
+@app.get("/report")
+def reporter_page():
+    return FileResponse(STATIC / "report.html")
+
+
+@app.post("/api/reports")
+async def submit_report(request: Request, text: str = Form(""), source: str = Form("console"),
+                        lat: str = Form(""), lng: str = Form(""),
+                        image: UploadFile | None = File(None), audio: UploadFile | None = File(None)):
+    """A field report from the console or the phone page: intake, then queue as waiting incidents."""
+    check_rate(request, "report")
+    img, aud = await _media(image), await _media(audio)
+    if not (text.strip() or img or aud):
+        raise HTTPException(400, detail="Send some text, a photo or a voice note.")
+    heals: list[str] = []
+    report = await run_in_threadpool(agent.intake, text, img, aud, heals)
+    try:
+        coords = (float(lat), float(lng)) if lat and lng else None
+    except ValueError:
+        coords = None
+    made, st = ops.add_report(report, source="phone" if source == "phone" else "console", coords=coords)
+    return {"incidents": made, "intake": report, "heals": heals, "ops": st, "summary": ops.summary(st)}
+
+
+@app.get("/api/ops")
+def ops_state():
+    st = ops.load()
+    return {"ops": st, "summary": ops.summary(st)}
+
+
+@app.post("/api/ops/wave")
+def ops_wave(req: WaveReq, request: Request):
+    check_rate(request, "wave")
+    ops.sync(req.ops)
+    out = ops.run_wave(chaos=req.chaos)
+    if "error" in out:
+        raise HTTPException(409, detail=out["error"])
+    return {**out, "summary": ops.summary(out["ops"])}
+
+
+class SyncReq(BaseModel):
+    ops: dict | None = None
+
+
+@app.post("/api/ops/sync")
+def ops_sync(req: SyncReq, request: Request):
+    """The coordinator's browser restores an operation that a restarted server instance lost."""
+    check_rate(request, "train")
+    ops.sync(req.ops)
+    st = ops.load()
+    return {"ops": st, "summary": ops.summary(st)}
+
+
+@app.post("/api/ops/reset")
+def ops_reset(request: Request):
+    check_rate(request, "reset")
+    st = ops.reset()
+    return {"ops": st, "summary": ops.summary(st)}
+
+
+@app.post("/api/ops/sitrep")
+def ops_sitrep(request: Request):
+    check_rate(request, "sitrep")
+    return ops.sitrep()
 
 
 @app.post("/mcp")

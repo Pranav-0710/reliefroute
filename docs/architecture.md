@@ -13,6 +13,7 @@ This document explains how ReliefRoute works internally. For setup and a quick t
 9. [MCP server](#9-mcp-server)
 10. [Deployment and state](#10-deployment-and-state)
 11. [Tests](#11-tests)
+12. [Live operations](#12-live-operations)
 
 ---
 
@@ -41,6 +42,8 @@ flowchart TD
 | `policy.py` | Features and decision procedure of the learned policy, plus inference in plain Python from `policy_weights.json`. |
 | `rl/train_policy.py` | Trains the policy with REINFORCE in PyTorch. Only needed offline. |
 | `relief_openenv/` | The simulator wrapped as an OpenEnv environment (typed models, server, client, manifest). |
+| `ops.py` | Live operations: incident queue, dispatch waves, restore from the browser, situation reports. |
+| `static/report.html` | Field reporter phone page. |
 
 ## 2. Lifecycle of a dispatch
 
@@ -168,7 +171,7 @@ Normalising makes easy and hard episodes comparable, which is what the learning 
 | Strategy | Order | Depot choice | Floods |
 |---|---|---|---|
 | `llm` | Gemini decides | Gemini decides, from the observation and stored lessons | Gemini is told to detour around `blocked_by` routes, and the guardrail enforces it |
-| `rl_policy` | Learned (need network) | Learned (depot network) | Detours around known hazards |
+| `rl_policy` | Learned (need network) | Learned (depot network); pins the depot's earliest-free truck | Detours when the actual leg (previous stop to this stop) crosses a known hazard |
 | `urgency_first` | Most urgent first | Nearest depot with enough stock | Detours around known hazards |
 | `nearest_first` | Arrival order | Nearest depot with enough stock | Detours around known hazards |
 | `fifo` | Arrival order | First depot with any stock | Ignores hazards |
@@ -211,10 +214,13 @@ flowchart LR
     R --> N2
 ```
 
-- Each network is one tanh hidden layer of 16 units. The need network scores every pending request, and sampling from its softmax picks the next one to load (this sets the stop order). The depot network then scores the depots that have stock.
+- Each network is one tanh hidden layer of 24 units. The need network scores every pending request, and sampling from its softmax picks the next one to load (this sets the stop order). The depot network then scores the depots that have both stock and a truck with space.
+- While deciding, `policy.decide` simulates the fleet the same way the simulator loads it (`_fleet`, `_truck_for`). Features use the real arrival time, the actual leg and whether it crosses a known hazard, and the truck's remaining space. The resulting plan pins each stop to that truck (`truck_id`), so what the policy imagined is exactly what gets driven.
 - `policy.decide` is written without any framework, so training (PyTorch tensors, sampled choices) and serving (plain floats, greedy choices) run exactly the same procedure.
-- Training: 6,000 episodes in batches of 32, Adam with learning rate 0.01, return = reward / best possible reward, with the batch mean as baseline.
-- Evaluation: 500 scenarios with seeds disjoint from training, all with the bridge collapse on. Results are in `rl/results.json`: 55.7% untrained, 80.2% trained, against 80.0% for `urgency_first`.
+- Training: 32,000 episodes, Adam with learning rate 0.005, return = reward / best possible reward. The baseline is **group-relative** (as in GRPO): each scenario is played 8 times per update, and an attempt's advantage is its return minus the mean return of its group, normalised over the batch.
+- Evaluation: 500 scenarios with seeds disjoint from training, all with the bridge collapse on. Results are in `rl/results.json`: 78.0% untrained, 80.6% trained, against 80.0% for `urgency_first`.
+- Paired over the same 500 scenarios: +0.57 points (95% CI +0.33 to +0.81), with 155 wins, 238 ties and 107 losses.
+- Best-of-40 sampled plans with hindsight reach about 82.5% on 100 of these scenarios, which is an estimate of the remaining headroom.
 
 **Online policy selection: an epsilon-greedy bandit** (`agent.select_strategy`)
 - Strategies that have never been tried are tried first.
@@ -358,3 +364,52 @@ When a rate limit is hit, the response is HTTP 429 with `Retry-After`. MCP gets 
 | `test_openenv_environment_and_server` | The OpenEnv environment plays a full episode, and its server answers `/health` and `/schema` (skipped without `openenv`) |
 | `test_rate_limits_per_client` | REST and MCP limits trigger per client address. Cheap MCP methods are never limited. |
 | `test_daily_gemini_budget_degrades_to_rules` | The daily Gemini budget refuses calls once spent |
+| `test_operations_queue_wave_and_sitrep` | Phone report placed by GPS, a wave reducing stock by exactly what was delivered, delivered statuses with notes, rule-based situation report, reset, empty-queue 409 |
+| `test_operation_keeps_collapsed_roads_and_restores_from_browser` | A wave's bridge collapse persists, the operation is restored from the browser copy after a reset, and junk in that copy is filtered |
+
+## 12. Live operations
+
+`ops.py` turns the agent from "one report, one episode" into a running operation.
+
+```mermaid
+sequenceDiagram
+    participant F as Phone page
+    participant C as Console
+    participant API as main.py
+    participant O as ops.py
+    participant AG as agent.py
+    F->>API: POST /api/reports (text, photo, voice, GPS)
+    API->>AG: intake
+    API->>O: add_report: incidents I1, I2 waiting
+    C->>API: GET /api/ops every 5 s
+    API-->>C: queue, stock, hazards
+    C->>API: POST /api/ops/wave
+    API->>O: run_wave
+    O->>AG: best_strategy, plan_round
+    O->>O: simulator step with live stock and hazards
+    O-->>C: deliveries, blocked, still waiting
+    C->>API: POST /api/ops/sitrep
+    API->>O: sitrep (Gemini, or rules)
+    O-->>C: report text
+```
+
+**Operation state** (`ops.json`):
+
+| Field | Contents |
+|---|---|
+| `incidents` | `id`, zone, coordinates, item, remaining `qty`, `requested`, urgency, `status` (`waiting` or `delivered`), source (`console` or `phone`), `located_by` (`gps` or `report`), `note`, report and delivery times |
+| `stock` | Units per item per depot. Starts at 400 each and goes down with every delivery. |
+| `hazards` | Hazards from reports, plus any bridge collapse from a wave. They stay until a new operation starts. |
+| `deliveries`, `waves` | History: what each wave delivered, with which truck and strategy |
+| `version` | Incremented on every change. Used to decide whether the browser copy is newer than the server's. |
+
+**A wave** builds a simulator episode containing only the waiting incidents (no simulated requests, no random floods), the operation's stock and its hazards. It then plans one round with `agent.best_strategy`, the strategy with the best average score in memory (excluding `fifo`), and executes one simulator step.
+
+Results are written back by incident id. The state is re-read under a lock, so reports that arrive while a wave is being planned are not lost:
+- delivered quantities reduce `qty` and depot stock
+- a fully served incident becomes `delivered`, with its truck, stop and arrival time in `note`
+- blocked and no-truck incidents keep `waiting`, with the reason in `note`
+
+**GPS placement.** A phone report with a position inside the Chennai area places all of its incidents at that position. This replaces the coordinates Gemini inferred from the place name.
+
+**Situation report.** `ops.sitrep` assembles the facts: figures, per-area waiting needs with wait times, hazards, stock and recent waves. Gemini turns them into headline, overview, priorities, blocked roads, stock alerts and actions, using only that data, and the output is validated and truncated field by field. Without Gemini, `_rule_sitrep` produces the same sections deterministically: priorities by urgency then wait time, stock under 100 units, and one action per open problem.

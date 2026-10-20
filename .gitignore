@@ -6,3 +6,4 @@ memory.json
 
 .vercel
 .env*
+ops.json
