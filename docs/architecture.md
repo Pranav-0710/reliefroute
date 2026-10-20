@@ -43,6 +43,7 @@ flowchart TD
 | `rl/train_policy.py` | Trains the policy with REINFORCE in PyTorch. Only needed offline. |
 | `relief_openenv/` | The simulator wrapped as an OpenEnv environment (typed models, server, client, manifest). |
 | `ops.py` | Live operations: incident queue, dispatch waves, restore from the browser, situation reports. |
+| `store.py` | Shared state storage: Cloud Firestore (REST, conditional writes with retry) or local JSON files. |
 | `static/report.html` | Field reporter phone page. |
 
 ## 2. Lifecycle of a dispatch
@@ -364,6 +365,8 @@ When a rate limit is hit, the response is HTTP 429 with `Retry-After`. MCP gets 
 | `test_openenv_environment_and_server` | The OpenEnv environment plays a full episode, and its server answers `/health` and `/schema` (skipped without `openenv`) |
 | `test_rate_limits_per_client` | REST and MCP limits trigger per client address. Cheap MCP methods are never limited. |
 | `test_daily_gemini_budget_degrades_to_rules` | The daily Gemini budget refuses calls once spent |
+| `test_firestore_writes_never_lose_a_concurrent_update` | Against a fake Firestore with real preconditions: a write that races another instance is rejected and retried, and both changes survive |
+| `test_operations_and_memory_run_on_firestore` | A report, a wave and a training episode all persist through the Firestore backend |
 | `test_operations_queue_wave_and_sitrep` | Phone report placed by GPS, a wave reducing stock by exactly what was delivered, delivered statuses with notes, rule-based situation report, reset, empty-queue 409 |
 | `test_sitrep_stock_alerts_are_never_left_to_gemini` | Stock alerts come from the exact rule even when Gemini writes the report |
 | `test_operation_keeps_collapsed_roads_and_restores_from_browser` | A wave's bridge collapse persists, the operation is restored from the browser copy after a reset, and junk in that copy is filtered |
@@ -411,7 +414,7 @@ Results are written back by incident id. The state is re-read under a lock, so r
 - a fully served incident becomes `delivered`, with its truck, stop and arrival time in `note`
 - blocked and no-truck incidents keep `waiting`, with the reason in `note`
 
-**Known limitation: several instances.** State lives in one instance's `/tmp`. The browser copy recovers from an instance *restart*, but not from two instances running *at the same time*: a report handled by one is invisible to a console reading the other. Moving `ops.json` and `memory.json` to Firestore removes this.
+**Storage and several instances** (`store.py`). With `FIREBASE_SERVICE_ACCOUNT` set, the operation and memory are Firestore documents (`reliefroute/ops`, `reliefroute/memory`, one string field `json`), read and written over the Firestore REST API with a service-account token. Every write carries the `updateTime` from its read as a precondition (`currentDocument.exists=false` for the first write). If another instance wrote in between, Firestore rejects the write and the read-modify-write is retried on fresh data, so a phone report and a wave planned on different instances never overwrite each other. Without Firestore the documents are local JSON files guarded by a process lock: fine for one instance, but two instances running at the same time each see their own state. The browser-copy restore is only used with file storage, and only adopts a copy from the same operation (or when the instance started empty), so a reset operation is never resurrected.
 
 **GPS placement.** A phone report with a position inside the Chennai area places all of its incidents at that position. This replaces the coordinates Gemini inferred from the place name.
 

@@ -269,12 +269,94 @@ def test_operation_keeps_collapsed_roads_and_restores_from_browser():
     assert out["trace"][0]["info"]["new_hazards"]
     assert any(h["label"].startswith("Bridge collapsed") for h in out["ops"]["hazards"])  # stays for later waves
     browser_copy = out["ops"]
-    ops.reset()  # a restarted serverless instance
+    os.remove(ops._path())  # a restarted serverless instance lost /tmp
     ops.sync(browser_copy)
     restored = ops.load()
     assert restored["version"] == browser_copy["version"] and len(restored["incidents"]) == 2
     ops.sync({"version": 999, "incidents": [{"id": "I1", "item": "gold", "lat": 0, "lng": 0}]})  # junk is filtered
     assert all(i["item"] in ("food", "water") for i in ops.load()["incidents"])
+    stale = ops.load()
+    ops.reset()  # a coordinator starts a new operation
+    ops.sync({**stale, "version": stale["version"] + 50})  # another browser still holds the old one
+    assert ops.load()["incidents"] == []  # the reset operation is not resurrected
+
+
+def _fake_firestore(monkeypatch, interfere=0):
+    """In-memory stand-in for the Firestore REST API, with the same write preconditions.
+    `interfere` = number of writes that another 'instance' sneaks in just before ours."""
+    import json as js
+
+    import store
+
+    docs, clock, left = {}, [0], [interfere]
+
+    class Resp:
+        def __init__(self, code, body):
+            self.status_code, self._body, self.text = code, body, js.dumps(body)
+
+        def json(self):
+            return self._body
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise RuntimeError(self.text)
+
+    def get(url, headers, timeout):
+        name = url.rsplit("/", 1)[1]
+        if name not in docs:
+            return Resp(404, {})
+        body, stamp = docs[name]
+        return Resp(200, {"fields": {"json": {"stringValue": body}}, "updateTime": stamp})
+
+    def patch(url, params, timeout, headers, json):
+        name = url.rsplit("/", 1)[1]
+        if left[0] and name in docs:  # another instance writes between our read and our write
+            left[0] -= 1
+            other = js.loads(docs[name][0])
+            other["written_by_other_instance"] = True
+            clock[0] += 1
+            docs[name] = (js.dumps(other), f"t{clock[0]}")
+        cur = docs.get(name)
+        if "currentDocument.updateTime" in params and (not cur or cur[1] != params["currentDocument.updateTime"]):
+            return Resp(400, {"error": {"status": "FAILED_PRECONDITION"}})
+        if params.get("currentDocument.exists") == "false" and cur:
+            return Resp(409, {"error": {"status": "ALREADY_EXISTS"}})
+        clock[0] += 1
+        docs[name] = (json["fields"]["json"]["stringValue"], f"t{clock[0]}")
+        return Resp(200, {})
+
+    monkeypatch.setattr(store, "_service_account", lambda: {"project_id": "p", "client_email": "svc@p"})
+    monkeypatch.setattr(store, "_token", lambda info: "token")
+    monkeypatch.setattr(store.httpx, "get", get)
+    monkeypatch.setattr(store.httpx, "patch", patch)
+    return docs, left
+
+
+def test_firestore_writes_never_lose_a_concurrent_update(monkeypatch):
+    import store
+
+    docs, left = _fake_firestore(monkeypatch)
+    store.update("ops", "unused", dict, lambda st: st.update(a=1))
+    left[0] = 1  # the next write races with another instance
+    attempts = []
+    store.update("ops", "unused", dict, lambda st: (attempts.append(1), st.update(b=2)))
+    assert store.read("ops", "unused", dict) == {"a": 1, "written_by_other_instance": True, "b": 2}
+    assert len(attempts) == 2  # first write rejected by the precondition, retried on fresh data
+    assert store.backend() == "firestore"
+
+
+def test_operations_and_memory_run_on_firestore(monkeypatch):
+    import json as js
+
+    import ops
+
+    docs, _ = _fake_firestore(monkeypatch)
+    ops.add_report({"summary": "t", "hazards": [],
+                    "needs": [agent._clean_need({"zone": "Adyar", "item": "water", "qty": 70, "urgency": 5})]})
+    out = ops.run_wave()
+    assert out["wave"]["n"] == 1 and js.loads(docs["ops"][0])["waves"][0]["n"] == 1
+    agent.run_episode(seed=1, strategy="urgency_first")
+    assert len(js.loads(docs["memory"][0])["episodes"]) == 1  # memory lives in the shared document too
 
 
 def test_rate_limits_per_client(monkeypatch):

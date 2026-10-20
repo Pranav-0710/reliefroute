@@ -1,14 +1,16 @@
 """Live operations: field incidents are queued and dispatched in waves; coordinators get situation reports.
 
-State is one JSON document (ops.json, /tmp on Vercel). The coordinator's browser keeps a copy and
-sends it back, so a serverless restart can be recovered (same pattern as agent memory).
+State is one JSON document, "ops", kept in Firestore when configured (shared by every server
+instance) or in a local file (ops.json, /tmp on Vercel). Every change is an atomic read-modify-write
+through store.update. The coordinator's browser also keeps a copy, which restores the operation if
+file storage was lost on a serverless restart.
 """
 import json
 import os
-import threading
 import time
 
 import agent
+import store
 from env import ITEMS, ReliefEnv
 
 OPS_STOCK = 400  # units of each item per depot when an operation starts
@@ -17,7 +19,6 @@ CHENNAI = (12.8, 13.35, 80.0, 80.4)  # lat min, lat max, lng min, lng max
 INCIDENT_KEYS = {"id": str, "zone": str, "lat": float, "lng": float, "item": str, "qty": int, "requested": int,
                  "urgency": int, "status": str, "source": str, "summary": str, "evidence": str, "note": str,
                  "located_by": str, "reported_at": int, "delivered_at": int}
-_lock = threading.Lock()
 
 
 def _path():
@@ -35,26 +36,31 @@ def new_state():
             "hazards": [], "deliveries": [], "waves": []}
 
 
+def _valid(st):
+    return st if "incidents" in st else new_state()
+
+
 def load():
-    try:
-        with open(_path(), encoding="utf-8") as f:
-            st = json.load(f)
-        if isinstance(st, dict) and "incidents" in st:
-            return st
-    except (OSError, ValueError):
-        pass
-    return new_state()
+    return _valid(store.read("ops", _path(), new_state))
 
 
-def save(st):
-    with open(_path(), "w", encoding="utf-8") as f:
-        json.dump(st, f)
+def _update(mutate):
+    """Atomic read-modify-write of the operation; mutate(state) edits in place and returns a value."""
+    def guarded(st):
+        if "incidents" not in st:
+            st.clear()
+            st.update(new_state())
+        return mutate(st)
+    return store.update("ops", _path(), new_state, guarded)
 
 
 def reset():
-    with _lock:
-        save(new_state())
-    return load()
+    def fresh(st):
+        version = st.get("version", 0) + 1  # keep counting so stale browser copies can never look newer
+        st.clear()
+        st.update(new_state(), version=version)
+        return st
+    return _update(fresh)
 
 
 def _in_chennai(lat, lng):
@@ -62,46 +68,50 @@ def _in_chennai(lat, lng):
 
 
 def sync(client):
-    """Adopt the browser's copy when it is ahead of ours (serverless instances lose /tmp on restart)."""
-    if not isinstance(client, dict) or not isinstance(client.get("incidents"), list):
+    """Adopt the browser's copy when file storage lost the operation (serverless instances lose /tmp
+    on restart). Firestore is shared and durable, so there the browser copy is never needed."""
+    if store.backend() == "firestore" or not isinstance(client, dict) or not isinstance(client.get("incidents"), list):
         return
     try:
         version = int(client.get("version", 0))
     except (TypeError, ValueError):
         return
-    with _lock:
-        st = load()
-        if version <= st["version"]:
-            return
-        clean = new_state()
-        for inc in client["incidents"][-500:]:
-            if not isinstance(inc, dict):
-                continue
-            try:
-                row = {k: (t(inc[k]) if inc.get(k) is not None else None) for k, t in INCIDENT_KEYS.items()}
-            except (TypeError, ValueError, KeyError):
-                continue
-            if row["item"] in ITEMS and row["status"] in ("waiting", "delivered") and _in_chennai(row["lat"], row["lng"]):
-                row["urgency"] = max(1, min(5, row["urgency"]))
-                clean["incidents"].append(row)
-        for d, items in (client.get("stock") or {}).items():
-            if d in clean["stock"] and isinstance(items, dict):
-                clean["stock"][d] = {it: max(0, min(10_000, int(items.get(it, 0)))) for it in ITEMS}
-        clean["hazards"] = [h for h in (client.get("hazards") or [])[-100:] if isinstance(h, dict)
-                            and isinstance(h.get("lat"), (int, float)) and isinstance(h.get("lng"), (int, float))]
-        clean["deliveries"] = [d for d in (client.get("deliveries") or [])[-500:] if isinstance(d, dict)]
-        clean["waves"] = [w for w in (client.get("waves") or [])[-100:] if isinstance(w, dict)]
-        clean["version"], clean["started"] = version, int(client.get("started") or clean["started"])
-        clean["next_id"] = max([int(i["id"][1:]) for i in clean["incidents"] if i["id"][1:].isdigit()] + [0]) + 1
-        save(clean)
+    clean = new_state()
+    for inc in client["incidents"][-500:]:
+        if not isinstance(inc, dict):
+            continue
+        try:
+            row = {k: (t(inc[k]) if inc.get(k) is not None else None) for k, t in INCIDENT_KEYS.items()}
+        except (TypeError, ValueError, KeyError):
+            continue
+        if row["item"] in ITEMS and row["status"] in ("waiting", "delivered") and _in_chennai(row["lat"], row["lng"]):
+            row["urgency"] = max(1, min(5, row["urgency"]))
+            clean["incidents"].append(row)
+    for d, items in (client.get("stock") or {}).items():
+        if d in clean["stock"] and isinstance(items, dict):
+            clean["stock"][d] = {it: max(0, min(10_000, int(items.get(it, 0)))) for it in ITEMS}
+    clean["hazards"] = [h for h in (client.get("hazards") or [])[-100:] if isinstance(h, dict)
+                        and isinstance(h.get("lat"), (int, float)) and isinstance(h.get("lng"), (int, float))]
+    clean["deliveries"] = [d for d in (client.get("deliveries") or [])[-500:] if isinstance(d, dict)]
+    clean["waves"] = [w for w in (client.get("waves") or [])[-100:] if isinstance(w, dict)]
+    clean["version"], clean["started"] = version, int(client.get("started") or clean["started"])
+    clean["next_id"] = max([int(i["id"][1:]) for i in clean["incidents"] if i["id"][1:].isdigit()] + [0]) + 1
+
+    def adopt(st):
+        lost = st.get("version", 0) == 0 and not st.get("incidents")  # this instance started empty
+        same_operation = clean["started"] == st.get("started")
+        if version > st.get("version", 0) and (lost or same_operation):  # never resurrect a reset operation
+            st.clear()
+            st.update(clean)
+    _update(adopt)
 
 
 def add_report(report, source="console", coords=None):
     """Turn an intake result into waiting incidents. A phone's GPS position overrides guessed coordinates."""
     gps = coords if coords and _in_chennai(*coords) else None
     now = int(time.time())
-    with _lock:
-        st = load()
+
+    def add(st):
         made = []
         for n in report["needs"]:
             inc = {"id": f"I{st['next_id']}", "zone": n["zone"], "lat": gps[0] if gps else n["lat"],
@@ -116,16 +126,15 @@ def add_report(report, source="console", coords=None):
             st["hazards"].append({"label": str(h.get("label", "Reported hazard"))[:80], "lat": h["lat"],
                                   "lng": h["lng"], "radius_km": 0.8, "source": source, "reported_at": now})
         st["version"] += 1
-        save(st)
-    return made, st
+        return made, st
+    return _update(add)
 
 
 def run_wave(chaos=False):
     """Plan and dispatch one round over every waiting incident with the best learned strategy."""
     heals = []
-    with _lock:
-        st = load()
-    waiting = [i for i in st["incidents"] if i["status"] == "waiting" and i["qty"] > 0]
+    st = load()
+    waiting =[i for i in st["incidents"] if i["status"] == "waiting" and i["qty"] > 0]
     if not waiting:
         return {"error": "No waiting incidents to dispatch.", "ops": st}
     mem = agent.load_memory()
@@ -147,8 +156,8 @@ def run_wave(chaos=False):
         heals.append(f"Delivery {b['need_id']} from {b['depot_id']} blocked by {b['hazards']} -> stays queued for the next wave")
 
     now = int(time.time())
-    with _lock:  # re-read: reports may have arrived while the wave was being planned
-        st = load()
+
+    def apply(st):  # atomic re-read: reports may have arrived (on any instance) while the wave was planned
         wave_no = len(st["waves"]) + 1
         byid = {i["id"]: i for i in st["incidents"]}
         for d in info["delivered"]:
@@ -176,7 +185,8 @@ def run_wave(chaos=False):
                 "blocked": len(info["blocked"]), "no_truck": len(info["no_truck"])}
         st["waves"].append(wave)
         st["version"] += 1
-        save(st)
+        return wave, st
+    wave, st = _update(apply)
     still = [i["id"] for i in st["incidents"] if i["status"] == "waiting"]
     return {"wave": wave, "strategy": strategy, "initial": initial, "hazards": env.state()["hazards"],
             "trace": [{"step": 1, "strategy": strategy, "reasoning": why, "action": action,

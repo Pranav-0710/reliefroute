@@ -112,7 +112,7 @@ flowchart LR
 - **Reports** from the phone page and the console go through the same multimodal intake. Each recognised need becomes an incident with status `waiting`. When the phone shares GPS and the position is inside Chennai, it places the incident instead of the coordinates guessed from the text.
 - **A wave** plans one dispatch round over every waiting incident with the strategy that has the best learned score (usually `rl_policy`). Depot stock goes down with every delivery. Incidents become `delivered`, are partly served, or stay `waiting` with a note explaining why (road blocked, no truck space). A collapsed road is kept as a hazard, so later waves avoid it.
 - **The situation report** summarises the operation for a coordinator: headline, overview, priorities, blocked roads, stock alerts and recommended actions. Gemini writes it from the live data only. Stock alerts are always computed exactly (items under 100 units) rather than left to Gemini. If Gemini is unavailable, a rule-based report with the same sections is produced instead.
-- **State** is one JSON document on the server. The coordinator's browser keeps a copy and restores it if a serverless instance restarts. The console polls every 5 seconds, so phone reports appear without a reload.
+- **State** is one JSON document. With `FIREBASE_SERVICE_ACCOUNT` set it lives in Cloud Firestore, shared by every server instance; every change is a conditional write that retries if another instance changed the document first, so concurrent reports and waves never overwrite each other. Without Firestore it is a file on the instance, and the coordinator's browser keeps a copy that restores it after a restart. The console polls every 5 seconds, so phone reports appear without a reload.
 
 ## Architecture
 
@@ -274,6 +274,7 @@ Open http://localhost:8080.
 | `GEMINI_MODELS` | no | `gemini-flash-latest,gemini-3.8-flash,gemini-3.5-flash-lite` | Order in which models are tried |
 | `MEMORY_PATH` | no | `memory.json` (`/tmp/memory.json` on Vercel) | Where memory is stored |
 | `OFFLINE` | no | – | Set to `1` to force rule-based mode, even when a key is present |
+| `FIREBASE_SERVICE_ACCOUNT` | no | – | Service-account key JSON (raw or base64). When set, memory and the live operation are stored in Cloud Firestore and shared by every server instance; otherwise local JSON files are used. |
 | `GEMINI_DAILY_BUDGET` | no | `300` | Gemini calls one server instance may make per UTC day. Past it, the agent uses its rule-based fallbacks. |
 
 ### Tests
@@ -282,7 +283,7 @@ Open http://localhost:8080.
 pytest -q
 ```
 
-The 22 tests run without network access or an API key. The OpenEnv test is skipped if the `openenv` package isn't installed. They cover:
+The 24 tests run without network access or an API key. The OpenEnv test is skipped if the `openenv` package isn't installed. They cover:
 - the simulator contract and truck rules: capacity, stop order, arrival times, a full fleet
 - recovery after a blocked route
 - guardrail repair
@@ -388,6 +389,7 @@ Over a limit, the server returns HTTP 429 with a `Retry-After` header.
 | `main.py` | FastAPI server: web app, REST API, MCP route, rate limits |
 | `mcp_server.py` | MCP protocol handling and tool definitions |
 | `ops.py` | Live operations: incident queue, dispatch waves, browser restore, situation reports |
+| `store.py` | Storage: Cloud Firestore over REST with conditional writes, or local JSON files |
 | `static/index.html` | The coordinator console with Operations and Simulator tabs (single file, no build step) |
 | `static/report.html` | The field reporter phone page |
 | `test_app.py` | Automated tests |
@@ -415,9 +417,9 @@ gcloud run deploy reliefroute --source . --region asia-south1 --allow-unauthenti
 - **Google Maps travel times are not live yet.** The Routes API call is implemented, but the deployed key is not authorised for that API (it returns `401`). Enabling the Routes API requires a Google Cloud project with billing, and ours is closed. The agent falls back to distance estimates, and the log labels those ETAs "estimate". Setting `MAPS_API_KEY` to a key with the Routes API enabled switches to real travel times with no code change.
 - **Gemini quota is limited.** The deployment uses the Gemini free tier, which allows few requests per day. When a model is exhausted, the circuit breaker moves to the next one. If every model is exhausted, the agent continues on rule-based intake and planning, which only understands English keywords and known area names.
 - **The scenario data is simulated.** Depot stock, the other requests, flood zones and the bridge collapse are all simulated. Locations are real Chennai localities with approximate coordinates. Distances are straight-line multiplied by a 1.3 road factor, not a road network.
-- **Memory is not durable.** It is a JSON file on the serverless instance, plus a copy in each browser. It is not reliably shared between instances or users. A production version would store it in Firestore.
+- **Shared state needs Firestore.** With `FIREBASE_SERVICE_ACCOUNT` set, memory and the live operation are stored in Cloud Firestore and shared by all server instances. Without it they are JSON files on one serverless instance (plus a copy in the coordinator's browser), which are not shared between instances that run at the same time.
 - **The RL policy is trained offline and is small.** Its weights are updated in training, not while the app runs; online learning is the bandit and the Gemini lessons. It matches the best hand-written rule rather than clearly beating it. Gemini itself is not fine-tuned.
-- **There is no authentication.** Anyone with the link can submit field reports, dispatch waves and reset the operation or memory. Operation state, like memory, lives on one serverless instance plus the coordinator's browser. When the host runs more than one instance at the same time, a phone report can land on an instance the console is not reading. We saw this once in testing, right after a deployment. A shared database (Firestore) is the proper fix. Per-address rate limits and a daily Gemini budget cap the damage, but both are kept per server instance. The MCP server is minimal: tools only, no sessions or streaming.
+- **There is no authentication.** Anyone with the link can submit field reports, dispatch waves and reset the operation or memory. Per-address rate limits and a daily Gemini budget cap the damage, but both are kept per server instance. The MCP server is minimal: tools only, no sessions or streaming.
 
 ## Next steps
 

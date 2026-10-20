@@ -68,7 +68,8 @@ def index():
 @app.get("/healthz")
 def healthz():
     return {"ok": True, "llm": agent.llm_available(), "models": agent._models(),
-            "rl_policy": agent.policy.available(), "gemini_budget": agent.budget_status()}
+            "rl_policy": agent.policy.available(), "gemini_budget": agent.budget_status(),
+            "storage": ops.store.backend()}
 
 
 @app.post("/api/dispatch")

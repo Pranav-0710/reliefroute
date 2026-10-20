@@ -18,6 +18,7 @@ import time
 import httpx
 
 import policy
+import store
 from env import CENTER, ITEMS, ZONES, ReliefEnv, distance_km
 
 STRATEGIES = ["llm", "rl_policy", "urgency_first", "nearest_first", "fifo"]
@@ -52,12 +53,7 @@ def _memory_path():
     return os.getenv("MEMORY_PATH") or ("/tmp/memory.json" if os.getenv("VERCEL") else "memory.json")
 
 
-def load_memory():
-    try:
-        with open(_memory_path(), encoding="utf-8") as f:
-            mem = json.load(f)
-    except (OSError, ValueError):
-        mem = {}
+def _fill(mem):
     mem.setdefault("lessons", [])
     mem.setdefault("episodes", [])
     mem.setdefault("bandit", {})
@@ -66,34 +62,40 @@ def load_memory():
     return mem
 
 
-def save_memory(mem):
-    with open(_memory_path(), "w", encoding="utf-8") as f:
-        json.dump(mem, f, indent=1)
+def load_memory():
+    """Memory document: Firestore when configured (shared by all instances), else a local file."""
+    return _fill(store.read("memory", _memory_path(), dict))
+
+
+def update_memory(mutate):
+    """Atomic read-modify-write of memory; mutate(mem) edits in place and returns a value."""
+    return store.update("memory", _memory_path(), dict, lambda mem: mutate(_fill(mem)))
 
 
 def sync_memory(client_mem):
     """Adopt the browser's copy of memory when it is ahead of ours.
 
-    Serverless instances lose /tmp when they restart; the browser keeps a copy so
-    learning survives cold starts.
+    With file storage, serverless instances lose /tmp when they restart; the browser keeps a copy
+    so learning survives cold starts.
     """
-    if not isinstance(client_mem, dict) or not isinstance(client_mem.get("episodes"), list):
+    if store.backend() == "firestore" or not isinstance(client_mem, dict) \
+            or not isinstance(client_mem.get("episodes"), list):  # Firestore is shared and durable
         return
-    with _lock:
-        mem = load_memory()
-        if len(client_mem["episodes"]) <= len(mem["episodes"]):
-            return
-        bandit = {s: {"n": int(v.get("n", 0)), "mean": float(v.get("mean", 0.0))}
-                  for s, v in (client_mem.get("bandit") or {}).items()
-                  if s in STRATEGIES and isinstance(v, dict)}
-        save_memory({"lessons": [str(l)[:160] for l in client_mem.get("lessons") or []][-8:],
-                     "episodes": [e for e in client_mem["episodes"] if isinstance(e, dict)][-200:],
-                     "bandit": bandit})
+    bandit ={s: {"n": int(v.get("n", 0)), "mean": float(v.get("mean", 0.0))}
+              for s, v in (client_mem.get("bandit") or {}).items()
+              if s in STRATEGIES and isinstance(v, dict)}
+    clean = {"lessons": [str(l)[:160] for l in client_mem.get("lessons") or []][-8:],
+             "episodes": [e for e in client_mem["episodes"] if isinstance(e, dict)][-200:], "bandit": bandit}
+
+    def adopt(mem):
+        if len(clean["episodes"]) > len(mem["episodes"]):
+            mem.clear()
+            mem.update(clean)
+    update_memory(adopt)
 
 
 def reset_memory():
-    with _lock:
-        save_memory(load_memory() | {"lessons": [], "episodes": [], "bandit": {}})
+    update_memory(lambda mem: mem.update(lessons=[], episodes=[], bandit={}))
 
 
 def select_strategy(mem, explore=True):
@@ -412,8 +414,7 @@ def run_episode(seed=None, extra_needs=None, extra_hazards=None, chaos=True, str
                 use_maps=False, explore=True):
     env = ReliefEnv()
     obs = env.reset(seed=seed, extra_needs=extra_needs, extra_hazards=extra_hazards, chaos=chaos)
-    with _lock:
-        mem = load_memory()
+    mem = load_memory()
     strategy = strategy or select_strategy(mem, explore)
     if strategy == "llm" and not llm_available():
         strategy = "urgency_first"
@@ -447,8 +448,7 @@ def run_episode(seed=None, extra_needs=None, extra_hazards=None, chaos=True, str
                 n, dp = needs[d["need_id"]], depots[d["depot_id"]]
                 d["eta"] = maps_eta((dp["lat"], dp["lng"]), (n["lat"], n["lng"]), heals)
 
-    with _lock:
-        mem = load_memory()
+    def record(mem):  # atomic: other instances may be training at the same time
         arm = mem["bandit"][strategy]
         arm["n"] += 1
         arm["mean"] = round(arm["mean"] + (score - arm["mean"]) / arm["n"], 2)
@@ -460,7 +460,7 @@ def run_episode(seed=None, extra_needs=None, extra_hazards=None, chaos=True, str
         mem["episodes"].append({"n": n, "strategy": strategy, "reward": total, "score": score,
                                 "heals": len(heals), "ts": int(time.time())})
         mem["episodes"] = mem["episodes"][-200:]
-        save_memory(mem)
+    update_memory(record)
 
     return {"strategy": strategy, "total_reward": total, "score": score, "trace": trace, "heals": heals,
             "new_lessons": new_lessons, "initial": initial, "hazards": st["hazards"],
