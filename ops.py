@@ -217,7 +217,7 @@ def _sitrep_data(st):
 SITREP_PROMPT = """You are the duty officer of a Chennai flood-relief operation. Write a situation report for the
 coordinator using ONLY the data below. Be specific (areas, items, quantities, minutes) and brief.
 Return ONLY JSON: {"headline": "<one line>", "overview": "<2-3 sentences>",
-"priorities": ["<most urgent unmet needs, max 5>"], "blocked_roads": ["..."], "stock_alerts": ["..."],
+"priorities": ["<most urgent unmet needs, max 5>"], "blocked_roads": ["..."],
 "actions": ["<concrete next steps, max 5>"]}
 Data: """
 
@@ -270,7 +270,11 @@ def sitrep():
     fallback, rep, by = _rule_sitrep(data), None, "rules"
     if agent.llm_available():
         try:
-            rep, by = _clean(agent.gemini_json([SITREP_PROMPT + json.dumps(data)], heals), fallback), "gemini"
+            # stock thresholds are exact facts, not judgement: they always come from the rule, and Gemini
+            # does not see raw stock (it tended to list healthy depots as alerts)
+            facts = {k: v for k, v in data.items() if k != "stock"}
+            rep, by = _clean(agent.gemini_json([SITREP_PROMPT + json.dumps(facts)], heals), fallback), "gemini"
+            rep["stock_alerts"] = fallback["stock_alerts"]
         except Exception as e:
             heals.append(f"Situation report via Gemini failed ({str(e)[:60]}) -> rule-based report")
     rep = rep or fallback

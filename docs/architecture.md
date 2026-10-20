@@ -365,6 +365,7 @@ When a rate limit is hit, the response is HTTP 429 with `Retry-After`. MCP gets 
 | `test_rate_limits_per_client` | REST and MCP limits trigger per client address. Cheap MCP methods are never limited. |
 | `test_daily_gemini_budget_degrades_to_rules` | The daily Gemini budget refuses calls once spent |
 | `test_operations_queue_wave_and_sitrep` | Phone report placed by GPS, a wave reducing stock by exactly what was delivered, delivered statuses with notes, rule-based situation report, reset, empty-queue 409 |
+| `test_sitrep_stock_alerts_are_never_left_to_gemini` | Stock alerts come from the exact rule even when Gemini writes the report |
 | `test_operation_keeps_collapsed_roads_and_restores_from_browser` | A wave's bridge collapse persists, the operation is restored from the browser copy after a reset, and junk in that copy is filtered |
 
 ## 12. Live operations
@@ -412,4 +413,4 @@ Results are written back by incident id. The state is re-read under a lock, so r
 
 **GPS placement.** A phone report with a position inside the Chennai area places all of its incidents at that position. This replaces the coordinates Gemini inferred from the place name.
 
-**Situation report.** `ops.sitrep` assembles the facts: figures, per-area waiting needs with wait times, hazards, stock and recent waves. Gemini turns them into headline, overview, priorities, blocked roads, stock alerts and actions, using only that data, and the output is validated and truncated field by field. Without Gemini, `_rule_sitrep` produces the same sections deterministically: priorities by urgency then wait time, stock under 100 units, and one action per open problem.
+**Situation report.** `ops.sitrep` assembles the facts: figures, per-area waiting needs with wait times, hazards, stock and recent waves. Gemini turns them into headline, overview, priorities, blocked roads and actions, using only that data, and the output is validated and truncated field by field. Stock alerts are a threshold fact, so they always come from the rule and Gemini never sees raw stock levels; in testing it flagged healthy depots as alerts. Without Gemini, `_rule_sitrep` produces the same sections deterministically: priorities by urgency then wait time, stock under 100 units, and one action per open problem.

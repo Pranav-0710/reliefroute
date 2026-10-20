@@ -244,6 +244,20 @@ def test_operations_queue_wave_and_sitrep():
     main._hits.clear()
 
 
+def test_sitrep_stock_alerts_are_never_left_to_gemini(monkeypatch):
+    import ops
+
+    ops.add_report({"summary": "t", "hazards": [],
+                    "needs": [agent._clean_need({"zone": "Adyar", "item": "food", "qty": 50, "urgency": 3})]})
+    monkeypatch.setattr(agent, "llm_available", lambda: True)
+    monkeypatch.setattr(agent, "gemini_json", lambda parts, heals: {
+        "headline": "h", "overview": "o", "priorities": ["p"], "blocked_roads": [], "actions": ["a"],
+        "stock_alerts": ["Guindy Hub: water 400 (healthy stock wrongly flagged)"]})
+    rep = ops.sitrep()
+    assert rep["generated_by"] == "gemini" and rep["report"]["stock_alerts"] == []  # all depots full: no alerts
+    assert "stock" not in ops.SITREP_PROMPT.split("Data:")[0].split("Return")[1]
+
+
 def test_operation_keeps_collapsed_roads_and_restores_from_browser():
     import ops
 

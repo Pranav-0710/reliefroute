@@ -111,7 +111,7 @@ flowchart LR
 
 - **Reports** from the phone page and the console go through the same multimodal intake. Each recognised need becomes an incident with status `waiting`. When the phone shares GPS and the position is inside Chennai, it places the incident instead of the coordinates guessed from the text.
 - **A wave** plans one dispatch round over every waiting incident with the strategy that has the best learned score (usually `rl_policy`). Depot stock goes down with every delivery. Incidents become `delivered`, are partly served, or stay `waiting` with a note explaining why (road blocked, no truck space). A collapsed road is kept as a hazard, so later waves avoid it.
-- **The situation report** summarises the operation for a coordinator: headline, overview, priorities, blocked roads, stock alerts and recommended actions. Gemini writes it from the live data only. If Gemini is unavailable, a rule-based report with the same sections is produced instead.
+- **The situation report** summarises the operation for a coordinator: headline, overview, priorities, blocked roads, stock alerts and recommended actions. Gemini writes it from the live data only. Stock alerts are always computed exactly (items under 100 units) rather than left to Gemini. If Gemini is unavailable, a rule-based report with the same sections is produced instead.
 - **State** is one JSON document on the server. The coordinator's browser keeps a copy and restores it if a serverless instance restarts. The console polls every 5 seconds, so phone reports appear without a reload.
 
 ## Architecture
@@ -282,7 +282,7 @@ Open http://localhost:8080.
 pytest -q
 ```
 
-The 21 tests run without network access or an API key. The OpenEnv test is skipped if the `openenv` package isn't installed. They cover:
+The 22 tests run without network access or an API key. The OpenEnv test is skipped if the `openenv` package isn't installed. They cover:
 - the simulator contract and truck rules: capacity, stop order, arrival times, a full fleet
 - recovery after a blocked route
 - guardrail repair
