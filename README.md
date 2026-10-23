@@ -129,6 +129,8 @@ flowchart LR
     Q --> T["Reporter<br/>/track/link"]
 ```
 
+<img src="docs/driver.png" width="280" align="right" alt="Driver page: the road route goes around a blocked bridge on the way to Velachery">
+
 - **Reports** from the phone page and the console go through the same multimodal intake.
   - A phone's GPS position, when inside Chennai, replaces the coordinates guessed from the text.
   - A need is merged into an open request when the item is the same, the place is the same and it was reported in the last 12 hours. "Same place" means within 0.5 km when both positions are GPS. When a position was guessed from a place name, which is only precise to the locality, the same locality (or within 1.5 km) is enough. The larger quantity and the higher urgency win, so two people describing one camp never send two trucks.
@@ -155,6 +157,7 @@ flowchart LR
   - If Gemini is unavailable, a rule-based report with the same sections is produced.
 - **Coordinator sign-in** is optional. With it on, only listed Google accounts can dispatch, manage resources or reset, and everyone else sees a read-only console without driver links. Reporters and drivers never sign in; their links are the credential.
 - **State** is one JSON document in Cloud Firestore when `FIREBASE_SERVICE_ACCOUNT` is set, shared by every server instance. Every change is a conditional write that retries if another instance changed the document first, so simultaneous reports, waves and driver updates never overwrite each other. The console polls every 5 seconds.
+<br clear="right">
 
 ## Architecture
 
