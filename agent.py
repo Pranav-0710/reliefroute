@@ -1,12 +1,15 @@
 """ReliefRoute agent: multimodal intake -> plan -> dispatch -> self-heal -> reflect/learn.
 
-Learning happens at three levels:
+Learning happens at four levels:
   1. Offline RL: a neural dispatch policy trained with REINFORCE in the simulator
      (rl/train_policy.py), served from policy_weights.json as the "rl_policy" strategy.
   2. Policy selection: an epsilon-greedy bandit over planning strategies,
      updated with each episode's score (persisted in memory.json).
   3. Reflection: after each episode Gemini writes lessons that are fed into the
      next episode's planning prompt (persisted in memory.json).
+  4. Field feedback: when a real route closes, what drivers reported (delivered, failed, road
+     blocked, actual arrival times) updates a learned ETA correction, per-strategy field results
+     and field lessons (record_field_route).
 """
 import json
 import os
@@ -57,6 +60,8 @@ def _fill(mem):
     mem.setdefault("lessons", [])
     mem.setdefault("episodes", [])
     mem.setdefault("bandit", {})
+    mem.setdefault("field", {"strategies": {}, "routes": []})
+    mem.setdefault("eta_factor", 1.0)  # learned: actual drive time / router estimate
     for s in STRATEGIES:
         mem["bandit"].setdefault(s, {"n": 0, "mean": 0.0})
     return mem
@@ -95,7 +100,8 @@ def sync_memory(client_mem):
 
 
 def reset_memory():
-    update_memory(lambda mem: mem.update(lessons=[], episodes=[], bandit={}))
+    update_memory(lambda mem: mem.update(lessons=[], episodes=[], bandit={}, field={"strategies": {}, "routes": []},
+                                         eta_factor=1.0))
 
 
 def select_strategy(mem, explore=True):
@@ -292,7 +298,8 @@ def heuristic_plan(obs, strategy):
 
 
 PLAN_PROMPT = """You are the dispatch planner of a flood-relief operation. Assign each pending need to one depot.
-Fleet: each depot has the trucks listed in "trucks", each carrying at most truck_capacity units this round.
+Fleet: each depot has the trucks listed in "trucks", each carrying at most truck_capacity units this round
+(or its own size in the depot's "capacity" map, when given).
 Assignments are loaded onto trucks in the order you list them, and a truck visits its stops in that order,
 so later stops arrive later. Optionally set "truck_id" to choose the truck; otherwise the depot's
 earliest-free truck is used.
@@ -466,6 +473,50 @@ def run_episode(seed=None, extra_needs=None, extra_hazards=None, chaos=True, str
             "new_lessons": new_lessons, "initial": initial, "hazards": st["hazards"],
             "deliveries": deliveries, "unmet": trace[-1]["info"].get("unmet", []),
             "llm": llm_available()}
+
+
+# ---- real-world feedback -------------------------------------------------------------
+ETA_LEARN_RATE = 0.2
+
+
+def record_field_route(outcome):
+    """Learn from a closed real route. outcome: {"route", "strategy", "stops": [{"zone", "urgency", "qty",
+    "delivered_qty", "status", "note", "eta_raw", "actual_min"}]}.
+
+    - score: urgency-weighted share of the loaded relief that reached people
+    - ETA correction: delivered stops with a plausible arrival time pull eta_factor towards
+      actual / router estimate (clicks seconds after dispatch are not arrivals, so they are ignored)
+    - lessons: failed and blocked stops become lessons for the planner
+    """
+    stops = outcome["stops"]
+    planned = sum(s["urgency"] * s["qty"] for s in stops) or 1
+    score = round(100 * sum(s["urgency"] * s["delivered_qty"] for s in stops) / planned, 1)
+    ratios = [min(3.0, max(0.5, s["actual_min"] / s["eta_raw"])) for s in stops
+              if s["status"] == "delivered" and s["eta_raw"] >= 1 and s["actual_min"] >= 0.3 * s["eta_raw"]]
+    lessons = []
+    for s in stops:
+        why = f" ({s['note'][:60]})" if s.get("note") else ""
+        if s["status"] == "blocked":
+            lessons.append(f"Field: road to {s['zone']} was blocked{why}; route around it and check hazards first.")
+        elif s["status"] == "failed":
+            lessons.append(f"Field: delivery to {s['zone']} failed{why}; confirm access before dispatching.")
+
+    def rec(mem):
+        arm = mem["field"]["strategies"].setdefault(outcome["strategy"], {"n": 0, "mean": 0.0})
+        arm["n"] += 1
+        arm["mean"] = round(arm["mean"] + (score - arm["mean"]) / arm["n"], 2)
+        mem["field"]["routes"] = (mem["field"]["routes"] + [{
+            "route": outcome["route"], "strategy": outcome["strategy"], "score": score, "stops": len(stops),
+            "delivered": sum(s["status"] == "delivered" for s in stops), "ts": int(time.time())}])[-100:]
+        for r in ratios:
+            mem["eta_factor"] = round((1 - ETA_LEARN_RATE) * mem["eta_factor"] + ETA_LEARN_RATE * r, 3)
+        for l in lessons:
+            if l not in mem["lessons"]:
+                mem["lessons"].append(l)
+        mem["lessons"] = mem["lessons"][-8:]
+        return mem["eta_factor"]
+    factor = update_memory(rec)
+    return {"score": score, "lessons": lessons, "eta_samples": len(ratios), "eta_factor": factor}
 
 
 def train(episodes=5, chaos=True):

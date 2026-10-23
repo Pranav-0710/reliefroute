@@ -1,197 +1,579 @@
-"""Live operations: field incidents are queued and dispatched in waves; coordinators get situation reports.
+"""Live operations: the real dispatch loop.
 
-State is one JSON document, "ops", kept in Firestore when configured (shared by every server
-instance) or in a local file (ops.json, /tmp on Vercel). Every change is an atomic read-modify-write
-through store.update. The coordinator's browser also keeps a copy, which restores the operation if
-file storage was lost on a serverless restart.
+    field report -> incident queue (duplicates merged; the reporter gets a tracking link)
+    -> wave: the agent plans over the waiting incidents with the idle trucks and current stock, on
+       real road distances that go around every reported hazard (roads.py)
+    -> each truck with stops gets a route; stock is loaded and the truck is out until the route closes
+    -> the driver opens the truck's link, follows the road geometry and marks every stop delivered,
+       failed or road blocked
+    -> outcomes flow back: failed and blocked stops return to the queue, a blocked road becomes a
+       hazard that later routes avoid, undelivered cargo goes back into stock, and the agent learns
+       its real ETA error and field lessons (agent.record_field_route)
+
+Coordinators manage depots, trucks and incoming supplies at runtime.
+State is one JSON document, "ops", in Firestore when configured (shared by every server instance) or
+a local file; every change is an atomic read-modify-write through store.update.
 """
+import copy
 import json
+import math
 import os
+import secrets
 import time
 
 import agent
+import roads
 import store
-from env import ITEMS, ReliefEnv
+from env import DEPOTS, ITEMS, TRUCK_CAPACITY, TRUCKS_PER_DEPOT, ReliefEnv, _xy, road_distances
 
+SCHEMA = 2
 OPS_STOCK = 400  # units of each item per depot when an operation starts
 LOW_STOCK = 100
 CHENNAI = (12.8, 13.35, 80.0, 80.4)  # lat min, lat max, lng min, lng max
-INCIDENT_KEYS = {"id": str, "zone": str, "lat": float, "lng": float, "item": str, "qty": int, "requested": int,
-                 "urgency": int, "status": str, "source": str, "summary": str, "evidence": str, "note": str,
-                 "located_by": str, "reported_at": int, "delivered_at": int}
+SERVICE_MIN = 10  # unloading time per stop
+DUP_KM = 0.5  # same item this close, still open, reported within DUP_WINDOW_S -> the same need
+DUP_WINDOW_S = 12 * 3600
+KEEP_SHAPES = 20  # closed routes that keep their road geometry
+BLOCKED_RADIUS_KM = 0.5
+OUTCOMES = ("delivered", "failed", "blocked")
+
+
+class OpsError(Exception):
+    """A request that conflicts with the current operation (shown to the user as is)."""
 
 
 def _path():
     return os.getenv("OPS_PATH") or ("/tmp/ops.json" if os.getenv("VERCEL") else "ops.json")
 
 
-def _depots():
-    obs = ReliefEnv().reset(seed=0, n_needs=0, chaos=False, random_hazards=False)
-    return obs["depots"]
+def _token():
+    return secrets.token_urlsafe(12)
+
+
+def _now():
+    return int(time.time())
+
+
+def _new_truck(truck_id, depot_id, capacity=TRUCK_CAPACITY):
+    return {"id": truck_id, "depot_id": depot_id, "capacity": capacity, "status": "idle", "route_id": None,
+            "token": _token()}
 
 
 def new_state():
-    return {"version": 0, "next_id": 1, "started": int(time.time()), "incidents": [],
-            "stock": {d["id"]: {it: OPS_STOCK for it in ITEMS} for d in _depots()},
-            "hazards": [], "deliveries": [], "waves": []}
-
-
-def _valid(st):
-    return st if "incidents" in st else new_state()
-
-
-def load():
-    return _valid(store.read("ops", _path(), new_state))
+    return {"schema": SCHEMA, "version": 0, "started": _now(), "next_id": 1, "next_route": 1, "next_hazard": 1,
+            "depots": [{"id": i, "name": n, "lat": la, "lng": lo, "stock": {it: OPS_STOCK for it in ITEMS}}
+                       for i, n, la, lo in DEPOTS],
+            "trucks": [_new_truck(f"{i}-T{k + 1}", i) for i, *_ in DEPOTS for k in range(TRUCKS_PER_DEPOT)],
+            "incidents": [], "reports": [], "routes": [], "hazards": [], "waves": [], "restocks": [], "log": []}
 
 
 def _update(mutate):
-    """Atomic read-modify-write of the operation; mutate(state) edits in place and returns a value."""
+    """Atomic read-modify-write of the operation; mutate(state) edits in place and returns a value.
+    Raising OpsError inside mutate aborts without writing."""
     def guarded(st):
-        if "incidents" not in st:
+        if st.get("schema") != SCHEMA:  # first use, or a document from an older version
+            version = st.get("version", 0)
             st.clear()
-            st.update(new_state())
-        return mutate(st)
+            st.update(new_state(), version=version)
+        out = mutate(st)
+        st["version"] += 1
+        return out
     return store.update("ops", _path(), new_state, guarded)
 
 
-def reset():
+def load():
+    st = store.read("ops", _path(), new_state)
+    return st if st.get("schema") == SCHEMA else _update(lambda s: s)
+
+
+def reset(actor="console"):
     def fresh(st):
-        version = st.get("version", 0) + 1  # keep counting so stale browser copies can never look newer
+        version = st["version"]  # keep counting so the version never goes backwards
         st.clear()
         st.update(new_state(), version=version)
+        _log(st, actor, "Started a new operation")
         return st
     return _update(fresh)
 
 
+# ---- helpers -------------------------------------------------------------------------------
 def _in_chennai(lat, lng):
     return CHENNAI[0] < lat < CHENNAI[1] and CHENNAI[2] < lng < CHENNAI[3]
 
 
-def sync(client):
-    """Adopt the browser's copy when file storage lost the operation (serverless instances lose /tmp
-    on restart). Firestore is shared and durable, so there the browser copy is never needed."""
-    if store.backend() == "firestore" or not isinstance(client, dict) or not isinstance(client.get("incidents"), list):
-        return
-    try:
-        version = int(client.get("version", 0))
-    except (TypeError, ValueError):
-        return
-    clean = new_state()
-    for inc in client["incidents"][-500:]:
-        if not isinstance(inc, dict):
-            continue
-        try:
-            row = {k: (t(inc[k]) if inc.get(k) is not None else None) for k, t in INCIDENT_KEYS.items()}
-        except (TypeError, ValueError, KeyError):
-            continue
-        if row["item"] in ITEMS and row["status"] in ("waiting", "delivered") and _in_chennai(row["lat"], row["lng"]):
-            row["urgency"] = max(1, min(5, row["urgency"]))
-            clean["incidents"].append(row)
-    for d, items in (client.get("stock") or {}).items():
-        if d in clean["stock"] and isinstance(items, dict):
-            clean["stock"][d] = {it: max(0, min(10_000, int(items.get(it, 0)))) for it in ITEMS}
-    clean["hazards"] = [h for h in (client.get("hazards") or [])[-100:] if isinstance(h, dict)
-                        and isinstance(h.get("lat"), (int, float)) and isinstance(h.get("lng"), (int, float))]
-    clean["deliveries"] = [d for d in (client.get("deliveries") or [])[-500:] if isinstance(d, dict)]
-    clean["waves"] = [w for w in (client.get("waves") or [])[-100:] if isinstance(w, dict)]
-    clean["version"], clean["started"] = version, int(client.get("started") or clean["started"])
-    clean["next_id"] = max([int(i["id"][1:]) for i in clean["incidents"] if i["id"][1:].isdigit()] + [0]) + 1
-
-    def adopt(st):
-        lost = st.get("version", 0) == 0 and not st.get("incidents")  # this instance started empty
-        same_operation = clean["started"] == st.get("started")
-        if version > st.get("version", 0) and (lost or same_operation):  # never resurrect a reset operation
-            st.clear()
-            st.update(clean)
-    _update(adopt)
+def _km(a, b):
+    (x1, y1), (x2, y2) = _xy(*a), _xy(*b)
+    return math.hypot(x2 - x1, y2 - y1)
 
 
-def add_report(report, source="console", coords=None):
-    """Turn an intake result into waiting incidents. A phone's GPS position overrides guessed coordinates."""
+def _log(st, actor, text):
+    st["log"] = (st["log"] + [{"at": _now(), "by": actor or "console", "text": text}])[-200:]
+
+
+def _set_status(inc):
+    if inc["closed"]:
+        inc["status"] = "closed"
+    elif inc["qty"] > 0:
+        inc["status"] = "waiting"  # may also have part of it on a truck (assigned > 0)
+    elif inc["assigned"] > 0:
+        inc["status"] = "en_route"
+    else:
+        inc["status"] = "delivered"
+
+
+def _find(items, key, value):
+    return next((x for x in items if x[key] == value), None)
+
+
+def _active_hazards(st):
+    return [h for h in st["hazards"] if h["active"]]
+
+
+def _add_hazard(st, label, lat, lng, radius_km, source):
+    h = {"id": f"H{st['next_hazard']}", "label": str(label)[:80], "lat": lat, "lng": lng,
+         "radius_km": radius_km, "source": source, "reported_at": _now(), "active": True}
+    st["next_hazard"] += 1
+    st["hazards"].append(h)
+    return h
+
+
+# ---- field reports ----------------------------------------------------------------------------
+def _duplicate_of(st, item, lat, lng, now):
+    """An open incident for the same item close by and reported recently: the same need reported twice."""
+    near = [(_km((lat, lng), (i["lat"], i["lng"])), i) for i in st["incidents"]
+            if i["item"] == item and not i["closed"] and (i["qty"] > 0 or i["assigned"] > 0)
+            and now - i["reported_at"] <= DUP_WINDOW_S]
+    near = [x for x in near if x[0] <= DUP_KM]
+    return min(near, key=lambda x: x[0])[1] if near else None
+
+
+def add_report(report, source="console", coords=None, actor=None):
+    """Turn an intake result into incidents (or merge it into existing ones) and give the reporter a
+    tracking token. A phone's GPS position overrides guessed coordinates."""
     gps = coords if coords and _in_chennai(*coords) else None
-    now = int(time.time())
+    now, track = _now(), _token()
 
     def add(st):
-        made = []
+        made, merged = [], []
         for n in report["needs"]:
-            inc = {"id": f"I{st['next_id']}", "zone": n["zone"], "lat": gps[0] if gps else n["lat"],
-                   "lng": gps[1] if gps else n["lng"], "item": n["item"], "qty": n["qty"], "requested": n["qty"],
-                   "urgency": n["urgency"], "status": "waiting", "source": source,
+            lat, lng = gps if gps else (n["lat"], n["lng"])
+            dup = _duplicate_of(st, n["item"], lat, lng, now)
+            if dup:  # the larger figure wins: two people describing one need must not send two trucks
+                extra = max(0, n["qty"] - dup["requested"])
+                dup.update(requested=dup["requested"] + extra, qty=dup["qty"] + extra,
+                           urgency=max(dup["urgency"], n["urgency"]), reports=dup["reports"] + 1)
+                if gps and dup["located_by"] != "gps":
+                    dup.update(lat=lat, lng=lng, located_by="gps")
+                _set_status(dup)
+                merged.append(dup)
+                continue
+            inc = {"id": f"I{st['next_id']}", "zone": n["zone"], "lat": lat, "lng": lng, "item": n["item"],
+                   "requested": n["qty"], "qty": n["qty"], "assigned": 0, "delivered": 0, "urgency": n["urgency"],
+                   "status": "waiting", "closed": False, "source": source, "reports": 1,
                    "summary": str(report.get("summary", ""))[:200], "evidence": str(n.get("evidence", ""))[:200],
                    "note": "", "located_by": "gps" if gps else "report", "reported_at": now, "delivered_at": None}
             st["next_id"] += 1
             st["incidents"].append(inc)
             made.append(inc)
-        for h in report.get("hazards", []):
-            st["hazards"].append({"label": str(h.get("label", "Reported hazard"))[:80], "lat": h["lat"],
-                                  "lng": h["lng"], "radius_km": 0.8, "source": source, "reported_at": now})
-        st["version"] += 1
-        return made, st
+        hazards = [_add_hazard(st, h.get("label", "Reported hazard"), h["lat"], h["lng"], 0.8, source)
+                   for h in report.get("hazards", []) if _in_chennai(h["lat"], h["lng"])]
+        st["reports"] = (st["reports"] + [{"token": track, "at": now, "source": source,
+                                           "summary": str(report.get("summary", ""))[:200],
+                                           "incidents": [i["id"] for i in made + merged],
+                                           "hazards": len(hazards)}])[-500:]
+        parts = [f"{len(made)} new"] + ([f"{len(merged)} merged into {', '.join(i['id'] for i in merged)}"] if merged else [])
+        _log(st, actor or source, f"Report from {source}: {' · '.join(parts)}")
+        return {"incidents": made, "merged": merged, "track": track, "ops": st}
     return _update(add)
 
 
-def run_wave(chaos=False):
-    """Plan and dispatch one round over every waiting incident with the best learned strategy."""
-    heals = []
+def track_view(token):
+    """What a reporter may see about their own report."""
     st = load()
-    waiting =[i for i in st["incidents"] if i["status"] == "waiting" and i["qty"] > 0]
+    rep = next((r for r in st["reports"] if secrets.compare_digest(r["token"], token)), None)
+    if not rep:
+        return None
+    out = []
+    for iid in rep["incidents"]:
+        inc = _find(st["incidents"], "id", iid)
+        if not inc:
+            continue
+        trips = [{"truck": r["truck_id"], "qty": s["qty"], "status": s["status"], "at": s["at"],
+                  "eta_at": r["created_at"] + s["eta_min"] * 60 if s["status"] == "pending" else None}
+                 for r in st["routes"] for s in r["stops"] if s["incident_id"] == iid]
+        out.append({k: inc[k] for k in ("id", "zone", "item", "requested", "qty", "assigned", "delivered", "urgency",
+                                        "status", "reports", "reported_at", "delivered_at")} | {"trips": trips})
+    return {"report": {k: rep[k] for k in ("at", "source", "summary", "hazards")}, "incidents": out}
+
+
+# ---- dispatch waves --------------------------------------------------------------------------
+def _route_for(points, hazards, label, heals):
+    try:
+        r = roads.route(points, hazards)
+        if r:
+            return r
+    except Exception as e:
+        heals.append(f"Road route for {label} failed ({str(e)[:70]}) -> straight-line estimate")
+    return roads.estimate(points)
+
+
+def run_wave(actor="console"):
+    """Plan one wave over every waiting incident with the idle trucks, then send each truck out."""
+    heals, st = [], load()
+    waiting = [i for i in st["incidents"] if i["qty"] > 0 and not i["closed"]]
+    idle = [t for t in st["trucks"] if t["status"] == "idle"]
     if not waiting:
-        return {"error": "No waiting incidents to dispatch.", "ops": st}
+        raise OpsError("No waiting incidents to dispatch.")
+    if not idle:
+        raise OpsError("Every truck is out on a route. Wait for a driver to finish, recall a route, or add a truck.")
+    hazards = _active_hazards(st)
+    depots = [{**d, "trucks": [t["id"] for t in idle if t["depot_id"] == d["id"]],
+               "capacity": {t["id"]: t["capacity"] for t in idle if t["depot_id"] == d["id"]}} for d in st["depots"]]
+    needs = [{k: i[k] for k in ("id", "zone", "lat", "lng", "item", "qty", "requested", "urgency")} for i in waiting]
+
+    road = None
+    try:
+        road = roads.table([(d["lat"], d["lng"]) for d in depots if d["trucks"]] +
+                           [(n["lat"], n["lng"]) for n in needs], hazards)
+        if road is None and roads.enabled():
+            heals.append("Too many stops for one road-distance request -> straight-line estimates for planning")
+    except Exception as e:
+        heals.append(f"Road router unavailable ({str(e)[:70]}) -> straight-line estimates for planning")
+
     mem = agent.load_memory()
-    strategy = agent.best_strategy(mem)
-    env = ReliefEnv()
-    env.reset(n_needs=0, chaos=chaos, random_hazards=False, extra_hazards=st["hazards"],
-              extra_needs=[{k: i[k] for k in ("id", "zone", "lat", "lng", "item", "qty", "requested", "urgency")}
-                           for i in waiting])
-    for d in env._s["depots"]:
-        d["stock"] = dict(st["stock"][d["id"]])
-    obs = env.observation()
-    initial = {"depots": obs["depots"], "needs": [dict(n) for n in obs["pending_needs"]]}
-    action, why = agent.plan_round(obs, strategy, mem["lessons"], heals)
-    res = env.step({"assignments": action})
-    info = res["info"]
-    for h in info["new_hazards"]:
-        heals.append(f"ALERT wave: {h['label']} detected mid-route")
-    for b in info["blocked"]:
-        heals.append(f"Delivery {b['need_id']} from {b['depot_id']} blocked by {b['hazards']} -> stays queued for the next wave")
+    strategy, factor = agent.best_strategy(mem), mem["eta_factor"]
+    with road_distances(road):
+        env = ReliefEnv()
+        obs = env.reset(n_needs=0, chaos=False, random_hazards=False, extra_hazards=hazards, extra_needs=needs,
+                        depots=depots)
+        action, why = agent.plan_round(obs, strategy, mem["lessons"], heals)
+        info = env.step({"assignments": action})["info"]
 
-    now = int(time.time())
+    incs = {i["id"]: i for i in waiting}
+    plans = []
+    for tid in dict.fromkeys(d["truck_id"] for d in info["delivered"]):
+        legs = sorted((d for d in info["delivered"] if d["truck_id"] == tid), key=lambda d: d["stop"])
+        depot = _find(st["depots"], "id", legs[0]["depot_id"])
+        points = [(depot["lat"], depot["lng"])] + [(incs[d["need_id"]]["lat"], incs[d["need_id"]]["lng"]) for d in legs]
+        r = _route_for(points, hazards, tid, heals)
+        elapsed, stops = 0.0, []
+        for k, (d, leg) in enumerate(zip(legs, r["legs"])):
+            elapsed += leg["minutes"] + (SERVICE_MIN if k else 0)  # unloading at each earlier stop
+            inc = incs[d["need_id"]]
+            stops.append({"n": k + 1, "incident_id": inc["id"], "zone": inc["zone"], "item": d["item"], "qty": d["qty"],
+                          "lat": inc["lat"], "lng": inc["lng"], "km": leg["km"], "eta_raw": round(elapsed, 1),
+                          "eta_min": round(elapsed * factor), "status": "pending", "delivered_qty": 0, "note": "",
+                          "at": None})
+        plans.append({"truck_id": tid, "depot_id": depot["id"], "km": r["km"], "minutes": round(r["minutes"] * factor),
+                      "source": r["source"], "shape": r["shape"], "stops": stops})
+    now = _now()
 
-    def apply(st):  # atomic re-read: reports may have arrived (on any instance) while the wave was planned
+    def apply(st):  # re-validated on fresh data: reports and drivers may have changed things meanwhile
         wave_no = len(st["waves"]) + 1
-        byid = {i["id"]: i for i in st["incidents"]}
-        for d in info["delivered"]:
-            st["stock"][d["depot_id"]][d["item"]] = max(0, st["stock"][d["depot_id"]][d["item"]] - d["qty"])
-            st["deliveries"].append({**d, "wave": wave_no, "dispatched_at": now})
-            inc = byid.get(d["need_id"])
-            if inc:
-                inc["qty"] = max(0, inc["qty"] - d["qty"])
-                if inc["qty"] == 0:
-                    inc.update(status="delivered", delivered_at=now + d["minutes"] * 60,
-                               note=f"wave {wave_no}: {d['truck_id']} stop {d['stop']}, arrives in {d['minutes']} min")
-                else:
-                    inc["note"] = f"wave {wave_no}: {d['qty']} delivered, {inc['qty']} still needed"
+        trucks = {t["id"]: t for t in st["trucks"]}
+        live = {i["id"]: i for i in st["incidents"]}
+        made = []
+        for p in plans:
+            t = trucks.get(p["truck_id"])
+            if not t or t["status"] != "idle":
+                heals.append(f"{p['truck_id']} became busy while this wave was planned -> its stops stay queued")
+                continue
+            route_id = f"R{st['next_route']}"
+            stock = _find(st["depots"], "id", p["depot_id"])["stock"]
+            kept = []
+            for s in p["stops"]:
+                inc = live.get(s["incident_id"])
+                q = min(s["qty"], inc["qty"] if inc and not inc["closed"] else 0, stock.get(s["item"], 0))
+                if q <= 0:
+                    continue
+                stock[s["item"]] -= q
+                inc["qty"] -= q
+                inc["assigned"] += q
+                inc["note"] = f"{route_id}: {t['id']} stop {s['n']}, ETA {s['eta_min']} min"
+                _set_status(inc)
+                kept.append({**s, "qty": q})
+            if not kept:
+                continue
+            st["next_route"] += 1
+            route = {"id": route_id, "wave": wave_no, "truck_id": t["id"], "depot_id": p["depot_id"], "status": "active",
+                     "created_at": now, "closed_at": None, "strategy": strategy, "km": p["km"], "minutes": p["minutes"],
+                     "source": p["source"], "shape": p["shape"], "eta_factor": factor, "stops": kept}
+            t.update(status="on_route", route_id=route_id)
+            st["routes"].append(route)
+            made.append(route)
         for b in info["blocked"]:
-            if b["need_id"] in byid:
-                byid[b["need_id"]]["note"] = f"wave {wave_no}: route blocked by {', '.join(b['hazards'])}; retry next wave"
+            if b["need_id"] in live:
+                live[b["need_id"]]["note"] = f"wave {wave_no}: no road route around {', '.join(b['hazards'])}; retry next wave"
         for b in info["no_truck"] + info["stockout"]:
-            if b["need_id"] in byid and byid[b["need_id"]]["status"] == "waiting":
-                byid[b["need_id"]]["note"] = f"wave {wave_no}: no truck space or stock at {b['depot_id']}; retry next wave"
-        for h in info["new_hazards"]:  # a collapsed bridge stays collapsed for later waves
-            st["hazards"].append({"label": h["label"], "lat": h["lat"], "lng": h["lng"], "radius_km": h["radius_km"],
-                                  "source": "operations", "reported_at": now})
+            inc = live.get(b["need_id"])
+            if inc and inc["qty"] > 0:
+                inc["note"] = f"wave {wave_no}: no free truck or stock at {b['depot_id']}; retry next wave"
+        _prune_shapes(st)
         wave = {"n": wave_no, "at": now, "strategy": strategy, "reasoning": why, "open_before": len(waiting),
-                "delivered": len(info["delivered"]), "units": sum(d["qty"] for d in info["delivered"]),
-                "blocked": len(info["blocked"]), "no_truck": len(info["no_truck"])}
+                "routes": len(made), "stops": sum(len(r["stops"]) for r in made),
+                "units": sum(s["qty"] for r in made for s in r["stops"]),
+                "left_waiting": sum(1 for i in st["incidents"] if i["qty"] > 0 and not i["closed"]),
+                "road": road is not None, "by": actor or "console"}
         st["waves"].append(wave)
-        st["version"] += 1
-        return wave, st
-    wave, st = _update(apply)
-    still = [i["id"] for i in st["incidents"] if i["status"] == "waiting"]
-    return {"wave": wave, "strategy": strategy, "initial": initial, "hazards": env.state()["hazards"],
-            "trace": [{"step": 1, "strategy": strategy, "reasoning": why, "action": action,
-                       "reward": res["reward"], "info": info}],
-            "deliveries": info["delivered"], "unmet": still, "heals": heals, "ops": st}
+        _log(st, actor, f"Wave {wave_no}: {wave['routes']} route(s), {wave['units']} units, strategy {strategy}")
+        return {"wave": wave, "routes": made, "ops": st}
+    out = _update(apply)
+    if not out["routes"]:
+        heals.append("No truck could take any stop this wave (stock or capacity) -> incidents stay queued")
+    return {**out, "strategy": strategy, "reasoning": why, "heals": heals,
+            "plan": {k: info[k] for k in ("blocked", "no_truck", "stockout")}}
+
+
+def _prune_shapes(st):
+    closed = [r for r in st["routes"] if r["status"] != "active" and r.get("shape")]
+    for r in closed[:-KEEP_SHAPES]:
+        r["shape"] = []
+
+
+# ---- routes and drivers ---------------------------------------------------------------------
+def _close(st, route, truck, why, actor):
+    """End a route: unvisited stops go back to the queue, leftover cargo back into stock, the truck
+    becomes free. Returns the outcome the agent learns from."""
+    now = _now()
+    incs = {i["id"]: i for i in st["incidents"]}
+    for s in route["stops"]:
+        if s["status"] == "pending":
+            s.update(status="skipped", at=now, note=why)
+            inc = incs.get(s["incident_id"])
+            if inc:
+                inc["assigned"] = max(0, inc["assigned"] - s["qty"])
+                inc["qty"] += s["qty"]
+                inc["note"] = f"{route['id']}: not reached ({why}); back in queue"
+                _set_status(inc)
+    stock = _find(st["depots"], "id", route["depot_id"])["stock"]
+    for s in route["stops"]:
+        stock[s["item"]] = stock.get(s["item"], 0) + s["qty"] - s["delivered_qty"]
+    route.update(status="done", closed_at=now)
+    truck.update(status="idle", route_id=None)
+    _log(st, actor, f"{route['id']} closed ({why}): "
+                    f"{sum(s['status'] == 'delivered' for s in route['stops'])}/{len(route['stops'])} stops delivered")
+    return {"route": route["id"], "strategy": route["strategy"],
+            "stops": [{"zone": s["zone"], "urgency": incs[s["incident_id"]]["urgency"] if s["incident_id"] in incs else 3,
+                       "qty": s["qty"], "delivered_qty": s["delivered_qty"], "status": s["status"], "note": s["note"],
+                       "eta_raw": s["eta_raw"], "actual_min": round(((s["at"] or now) - route["created_at"]) / 60, 1)}
+                      for s in route["stops"]]}
+
+
+def _learn(outcome):
+    try:
+        return agent.record_field_route(outcome)
+    except Exception as e:  # the route is closed either way; report that this outcome was not learned
+        return {"error": f"Could not record field outcome ({str(e)[:60]})"}
+
+
+def _by_token(st, token):
+    return next((t for t in st["trucks"] if secrets.compare_digest(t["token"], token)), None)
+
+
+def driver_view(token):
+    st = load()
+    t = _by_token(st, token)
+    if not t:
+        return None
+    route = _find(st["routes"], "id", t["route_id"]) if t["route_id"] else None
+    depot = _find(st["depots"], "id", t["depot_id"])
+    return {"truck": {k: t[k] for k in ("id", "capacity", "status", "depot_id")},
+            "depot": {k: depot[k] for k in ("id", "name", "lat", "lng")}, "route": route,
+            "hazards": _active_hazards(st)}
+
+
+def driver_update(token, stop_n, outcome, qty=None, note="", coords=None):
+    """A driver reports what happened at one stop. Closing the last stop closes the route."""
+    if outcome not in OUTCOMES:
+        raise OpsError(f"Outcome must be one of {', '.join(OUTCOMES)}.")
+    note = str(note or "")[:120]
+
+    def upd(st):
+        t = _by_token(st, token)
+        route = _find(st["routes"], "id", t["route_id"]) if t and t["route_id"] else None
+        if not route:
+            raise OpsError("This truck has no active route.")
+        stop = next((s for s in route["stops"] if s["n"] == stop_n), None)
+        if not stop or stop["status"] != "pending":
+            raise OpsError("That stop is already recorded.")
+        inc = _find(st["incidents"], "id", stop["incident_id"])
+        now = _now()
+        if outcome == "delivered":
+            dq = stop["qty"] if qty is None else max(0, min(stop["qty"], int(qty)))
+            stop.update(status="delivered", delivered_qty=dq, at=now, note=note)
+            if inc:
+                inc["assigned"] = max(0, inc["assigned"] - stop["qty"])
+                inc["delivered"] += dq
+                inc["qty"] += stop["qty"] - dq  # a short delivery leaves the rest in the queue
+                inc["note"] = f"{route['id']}: {dq} delivered by {t['id']}" + \
+                              (f", {stop['qty'] - dq} still needed" if dq < stop["qty"] else "")
+        else:
+            stop.update(status=outcome, at=now, note=note)
+            if inc:
+                inc["assigned"] = max(0, inc["assigned"] - stop["qty"])
+                inc["qty"] += stop["qty"]
+                inc["note"] = f"{route['id']}: {'road blocked' if outcome == 'blocked' else 'delivery failed'}" \
+                              f"{': ' + note if note else ''}; back in queue"
+            if outcome == "blocked":  # the blockage is where the driver is, else on the way to the stop
+                prev = route["stops"][stop["n"] - 2] if stop["n"] > 1 else _find(st["depots"], "id", route["depot_id"])
+                lat, lng = coords if coords and _in_chennai(*coords) else (
+                    (prev["lat"] + stop["lat"]) / 2, (prev["lng"] + stop["lng"]) / 2)
+                h = _add_hazard(st, f"Road blocked: {note or 'reported by driver'} ({t['id']})", lat, lng,
+                                BLOCKED_RADIUS_KM, "driver")
+                _log(st, f"driver {t['id']}", f"Reported {h['id']} near {stop['zone']}")
+        if inc:
+            if inc["qty"] == 0 and inc["assigned"] == 0 and not inc["delivered_at"]:
+                inc["delivered_at"] = now
+            _set_status(inc)
+        _log(st, f"driver {t['id']}", f"{route['id']} stop {stop['n']} ({stop['zone']}): {outcome}")
+        closed = None
+        if all(s["status"] != "pending" for s in route["stops"]):
+            closed = _close(st, route, t, "all stops done", f"driver {t['id']}")
+        return {"stop": stop, "closed": closed}
+    out = _update(upd)
+    out["learned"] = _learn(out["closed"]) if out["closed"] else None
+    return out
+
+
+def recall_route(route_id, actor="console"):
+    """A coordinator ends a route early (truck broke down, driver unreachable)."""
+    def rec(st):
+        route = _find(st["routes"], "id", route_id)
+        if not route or route["status"] != "active":
+            raise OpsError(f"{route_id} is not an active route.")
+        return _close(st, route, _find(st["trucks"], "id", route["truck_id"]), "recalled by coordinator", actor)
+    outcome = _update(rec)
+    return {"closed": outcome, "learned": _learn(outcome)}
+
+
+# ---- resources -------------------------------------------------------------------------------------
+def _capacity(capacity):
+    try:
+        capacity = int(capacity)
+    except (TypeError, ValueError):
+        capacity = 0
+    if not 20 <= capacity <= 2000:
+        raise OpsError("Truck capacity must be between 20 and 2000 units.")
+    return capacity
+
+
+def add_depot(name, lat, lng, actor="console"):
+    name = str(name).strip()[:40]
+    if not name or not _in_chennai(lat, lng):
+        raise OpsError("A depot needs a name and a location inside the Chennai operation area.")
+
+    def add(st):
+        n = max([int(d["id"][1:]) for d in st["depots"] if d["id"][1:].isdigit()] + [0]) + 1
+        d = {"id": f"D{n}", "name": name, "lat": lat, "lng": lng, "stock": {it: 0 for it in ITEMS}}
+        st["depots"].append(d)
+        _log(st, actor, f"Opened depot {d['id']} {name}")
+        return d
+    return _update(add)
+
+
+def add_truck(depot_id, capacity, actor="console"):
+    capacity = _capacity(capacity)
+
+    def add(st):
+        if not _find(st["depots"], "id", depot_id):
+            raise OpsError(f"No depot {depot_id}.")
+        n = sum(t["depot_id"] == depot_id for t in st["trucks"]) + 1
+        while _find(st["trucks"], "id", f"{depot_id}-T{n}"):
+            n += 1
+        t = _new_truck(f"{depot_id}-T{n}", depot_id, capacity)
+        st["trucks"].append(t)
+        _log(st, actor, f"Added truck {t['id']} ({capacity} units)")
+        return t
+    return _update(add)
+
+
+def set_truck(truck_id, capacity=None, in_service=None, actor="console"):
+    capacity = None if capacity is None else _capacity(capacity)
+
+    def upd(st):
+        t = _find(st["trucks"], "id", truck_id)
+        if not t:
+            raise OpsError(f"No truck {truck_id}.")
+        if capacity is not None:
+            t["capacity"] = capacity
+        if in_service is not None:
+            if t["status"] == "on_route":
+                raise OpsError(f"{truck_id} is on a route; recall it first.")
+            t["status"] = "idle" if in_service else "out_of_service"
+        _log(st, actor, f"Updated truck {truck_id}: {t['capacity']} units, {t['status'].replace('_', ' ')}")
+        return t
+    return _update(upd)
+
+
+def restock(depot_id, item, qty, note="", actor="console"):
+    try:
+        qty = int(qty)
+    except (TypeError, ValueError):
+        qty = 0
+    if item not in ITEMS or not 1 <= qty <= 100_000:
+        raise OpsError(f"Restock needs an item ({', '.join(ITEMS)}) and a quantity between 1 and 100000.")
+
+    def add(st):
+        d = _find(st["depots"], "id", depot_id)
+        if not d:
+            raise OpsError(f"No depot {depot_id}.")
+        d["stock"][item] = d["stock"].get(item, 0) + qty
+        st["restocks"] = (st["restocks"] + [{"at": _now(), "depot_id": depot_id, "item": item, "qty": qty,
+                                             "note": str(note)[:80], "by": actor or "console"}])[-200:]
+        _log(st, actor, f"Restocked {depot_id}: +{qty} {item}" + (f" ({note})" if note else ""))
+        return d
+    return _update(add)
+
+
+def clear_hazard(hazard_id, actor="console"):
+    def upd(st):
+        h = _find(st["hazards"], "id", hazard_id)
+        if not h or not h["active"]:
+            raise OpsError(f"{hazard_id} is not an active hazard.")
+        h["active"] = False
+        _log(st, actor, f"Cleared {hazard_id} ({h['label']}): road reopened")
+        return h
+    return _update(upd)
+
+
+def close_incident(incident_id, reason="", actor="console"):
+    """A coordinator closes a request that needs no delivery (resolved locally, false report)."""
+    reason = str(reason or "")[:80]
+
+    def upd(st):
+        inc = _find(st["incidents"], "id", incident_id)
+        if not inc or inc["status"] in ("closed", "delivered"):
+            raise OpsError(f"{incident_id} is not open.")
+        if inc["assigned"]:
+            raise OpsError(f"{incident_id} is on a truck; record or recall that route first.")
+        inc.update(closed=True, qty=0, note=f"closed: {reason or 'by coordinator'}")
+        _set_status(inc)
+        _log(st, actor, f"Closed {incident_id}: {reason or 'no reason given'}")
+        return inc
+    return _update(upd)
+
+
+# ---- views -------------------------------------------------------------------------------------
+def view(st, coordinator):
+    """The operation as a client may see it: driver links only for coordinators, tracking links never."""
+    out = copy.deepcopy(st)
+    out["reports"] = [{k: r[k] for k in ("at", "source", "incidents")} for r in out["reports"][-50:]]
+    if not coordinator:
+        for t in out["trucks"]:
+            t.pop("token", None)
+    return out
+
+
+def summary(st):
+    now = _now()
+    waiting = [i for i in st["incidents"] if i["qty"] > 0 and not i["closed"]]
+    return {"waiting": len(waiting), "en_route": sum(i["assigned"] > 0 for i in st["incidents"]),
+            "delivered": sum(i["status"] == "delivered" for i in st["incidents"]),
+            "units_delivered": sum(i["delivered"] for i in st["incidents"]),
+            "hazards": len(_active_hazards(st)), "waves": len(st["waves"]),
+            "trucks_out": sum(t["status"] == "on_route" for t in st["trucks"]),
+            "trucks_free": sum(t["status"] == "idle" for t in st["trucks"]),
+            "longest_wait_min": max([(now - i["reported_at"]) // 60 for i in waiting] or [0])}
 
 
 # ---- situation report --------------------------------------------------------------
@@ -199,28 +581,22 @@ def _ist(ts):
     return time.strftime("%d %b %Y %H:%M IST", time.gmtime(ts + 19800))
 
 
-def summary(st):
-    now = int(time.time())
-    waiting = [i for i in st["incidents"] if i["status"] == "waiting"]
-    return {"waiting": len(waiting), "delivered": sum(i["status"] == "delivered" for i in st["incidents"]),
-            "units_delivered": sum(d.get("qty", 0) for d in st["deliveries"]), "hazards": len(st["hazards"]),
-            "waves": len(st["waves"]),
-            "longest_wait_min": max([(now - i["reported_at"]) // 60 for i in waiting] or [0])}
-
-
 def _sitrep_data(st):
-    now = int(time.time())
-    names = {d["id"]: d["name"] for d in _depots()}
+    now = _now()
     areas = {}
     for i in st["incidents"]:
-        a = areas.setdefault(i["zone"], {"zone": i["zone"], "waiting": [], "delivered_units": 0})
-        if i["status"] == "waiting":
+        a = areas.setdefault(i["zone"], {"zone": i["zone"], "waiting": [], "on_trucks": 0, "delivered_units": 0})
+        if i["qty"] > 0 and not i["closed"]:
             a["waiting"].append({"item": i["item"], "qty": i["qty"], "urgency": i["urgency"],
                                  "waiting_min": (now - i["reported_at"]) // 60, "note": i["note"]})
-        a["delivered_units"] += i["requested"] - i["qty"]
+        a["on_trucks"] += i["assigned"]
+        a["delivered_units"] += i["delivered"]
+    active = [{"route": r["id"], "truck": r["truck_id"], "minutes_out": (now - r["created_at"]) // 60,
+               "stops_left": sum(s["status"] == "pending" for s in r["stops"])}
+              for r in st["routes"] if r["status"] == "active"]
     return {"time": _ist(now), "operation_started": _ist(st["started"]), "figures": summary(st),
-            "areas": list(areas.values()), "hazards": [h["label"] for h in st["hazards"]],
-            "stock": {names.get(d, d): items for d, items in st["stock"].items()},
+            "areas": list(areas.values()), "hazards": [h["label"] for h in _active_hazards(st)],
+            "active_routes": active, "stock": {d["name"]: d["stock"] for d in st["depots"]},
             "recent_waves": st["waves"][-3:]}
 
 
@@ -239,13 +615,18 @@ def _rule_sitrep(data):
     low = [(depot, item, qty) for depot, items in data["stock"].items() for item, qty in items.items() if qty < LOW_STOCK]
     actions = []
     if waiting:
-        actions.append(f"Dispatch a wave for the {len(waiting)} waiting request(s), most urgent first.")
+        actions.append(f"Dispatch a wave for the {len(waiting)} waiting request(s), most urgent first."
+                       + ("" if f["trucks_free"] else " No truck is free: recall a route or add a truck."))
+    late = [r for r in data["active_routes"] if r["minutes_out"] > 120]
+    actions += [f"Check on {r['truck']} ({r['route']}): out {r['minutes_out']} min with {r['stops_left']} stop(s) left."
+                for r in late[:2]]
     actions += [f"Restock {item} at {depot}." for depot, item, _ in low[:2]]
     if data["hazards"]:
-        actions.append(f"Verify and clear reported hazards: {', '.join(data['hazards'][:3])}.")
-    return {"headline": f"{f['waiting']} request(s) waiting, {f['delivered']} delivered, {f['units_delivered']} units moved",
+        actions.append(f"Verify reported hazards and clear any that reopened: {', '.join(data['hazards'][:3])}.")
+    return {"headline": f"{f['waiting']} request(s) waiting, {f['en_route']} on trucks, {f['units_delivered']} units delivered",
             "overview": (f"Operation running since {data['operation_started']} with {f['waves']} dispatch wave(s). "
-                         f"Longest current wait is {f['longest_wait_min']} min. {f['hazards']} road hazard(s) on record."),
+                         f"{f['trucks_out']} truck(s) out, {f['trucks_free']} free. Longest current wait is "
+                         f"{f['longest_wait_min']} min. {f['hazards']} active road hazard(s)."),
             "priorities": [f"{z}: {w['qty']} {w['item']}, urgency {w['urgency']}, waiting {w['waiting_min']} min"
                            for z, w in waiting[:5]],
             "blocked_roads": data["hazards"][:8],
@@ -268,8 +649,9 @@ def render(rep, data, generated_by):
                        ("Stock alerts", "stock_alerts"), ("Recommended actions", "actions")):
         lines += ["", title] + ([f"- {x}" for x in rep[key]] or ["- none"])
     f = data["figures"]
-    lines += ["", f"Figures: {f['waiting']} waiting, {f['delivered']} delivered, {f['units_delivered']} units delivered, "
-                  f"{f['hazards']} hazards, {f['waves']} waves.",
+    lines += ["", f"Figures: {f['waiting']} waiting, {f['en_route']} on trucks, {f['delivered']} delivered, "
+                  f"{f['units_delivered']} units delivered, {f['hazards']} active hazards, {f['waves']} waves, "
+                  f"{f['trucks_out']} trucks out.",
               f"Generated by {'Gemini' if generated_by == 'gemini' else 'rule-based fallback'} from live operations data."]
     return "\n".join(lines)
 

@@ -6,7 +6,12 @@ ReliefRoute is a flood-relief logistics agent for Chennai. It takes a field repo
 - it detects when a route fails mid-delivery and replans
 - it scores the outcome and learns from it before the next run, including a dispatch policy trained with reinforcement learning (PyTorch) in an OpenEnv environment
 
-In live operations, field workers report from a phone page, reports pile up in an incident queue, the coordinator dispatches them in waves, and Gemini writes situation reports on demand.
+Live operations run the real loop:
+1. Field workers report from a phone page, and duplicate reports of the same need are merged.
+2. The coordinator dispatches waves. The agent plans them on real road distances (OpenStreetMap) that go around every reported flood.
+3. Each driver gets their route on their phone and marks every stop delivered, failed or road blocked.
+4. What drivers report flows back: blocked roads become hazards that later routes avoid, undelivered relief returns to the queue, and the agent learns its real ETA error.
+5. Reporters follow their request on a tracking link.
 
 Built for the Agent Wars challenge at GDG DevFest 2026.
 
@@ -14,6 +19,7 @@ Built for the Agent Wars challenge at GDG DevFest 2026.
 |---|---|
 | Live app (coordinator console) | https://reliefroute.vercel.app |
 | Field reporter (phone page) | https://reliefroute.vercel.app/report |
+| Driver and tracking pages | `/driver/<truck link>` and `/track/<report link>`: secret links handed out by the app |
 | MCP endpoint | https://reliefroute.vercel.app/mcp |
 | Health check | https://reliefroute.vercel.app/healthz |
 | Source | https://github.com/Pranav-0710/reliefroute |
@@ -65,12 +71,17 @@ flowchart LR
 
 The console has two tabs: **Operations** (a live relief operation) and **Simulator** (single scored episodes and training).
 
-**Operations**
-1. Open https://reliefroute.vercel.app/report on a phone, type a request (any language), optionally share your location, and send. Within 5 seconds it appears in the console's **Incident queue**, tagged `PHONE`.
-2. In the console, pick a sample report and click **Add to incident queue**. Add two or three.
-3. Tick **Simulate a road collapse in the next wave** and click **Dispatch wave**. Trucks serve what they can. A request whose road collapsed stays queued with a note.
-4. Untick the box and click **Dispatch wave** again. The collapsed road is remembered, so the request is served from another direction.
-5. Click **Situation report** for a coordinator briefing written by Gemini from the live data. You can copy it or download it as text.
+**Operations** (a laptop for the console, a phone for the field)
+1. **Report.** Open https://reliefroute.vercel.app/report on a phone, type a request (any language), share your location and send. It appears in the console's **Incident queue** within 5 seconds, tagged `PHONE`. The phone shows a **Track this request** link.
+2. **Report the same need again.** Send a second report for the same item in the same area. It is merged (`MERGED`, "2 reports"), not queued twice.
+3. **Dispatch.** Add one or two sample reports from the console, then click **Dispatch wave**. Each truck with stops gets a route on real roads (green line on the map, `WAVE` in the log). The stock leaves the depot, and the truck shows **on route** in the **Fleet** panel.
+4. **Drive.** In **Fleet**, open a truck's driver link (or copy it to a phone). The driver sees the road route and the stops in order.
+   - Tap **Road blocked** on one stop. The console logs `BLOCKED` and `REROUTE`, and the road appears under **Road hazards**.
+   - Tap **Delivered** on the others. The console logs `DRIVER`, then `LEARN` when the route closes.
+5. **Recover.** Click **Dispatch wave** again. The blocked request is routed around the new hazard; its route is longer than before.
+6. **Follow up.** Open the reporter's tracking link to see "Truck on the way" with an ETA. Click **Situation report** for a Gemini briefing from the live data.
+
+Under **Depots and stock** you can log incoming supplies or open a new depot by clicking the map. **Fleet** adds trucks, takes them out of service and recalls routes.
 
 **Simulator**
 1. Under **Training**, click **Run 5 episodes**. Click it a second time.
@@ -93,61 +104,107 @@ The console has two tabs: **Operations** (a live relief operation) and **Simulat
 | `SCORE` | Outcome as a percentage of the best possible |
 | `LESSON` | A lesson written to memory for the next run |
 | `QUEUED`, `PHONE` | Incidents added to the operation from the console or from a phone |
-| `WAVE n`, `STATUS` | A dispatch wave in live operations and what is still waiting after it |
+| `MERGED`, `TRACKING` | A report matched an open request and was merged; the reporter's status link |
+| `WAVE n`, `STATUS` | A dispatch wave: each truck's road route, and what is still waiting |
+| `DRIVER`, `BLOCKED` | A driver recorded a stop as delivered, failed, or blocked by a road hazard |
+| `LEARN` | A route closed and its real outcome was recorded |
 
 ## Live operations
 
 ```mermaid
 flowchart LR
-    P["Phone page /report<br/>text, photo, voice, GPS"] --> I["Intake<br/>Gemini multimodal"]
-    C["Console<br/>Add to incident queue"] --> I
-    I --> Q[("Incident queue<br/>waiting / delivered")]
-    Q --> W["Dispatch wave<br/>best learned strategy"]
-    W --> T["Trucks<br/>capacity, multi-stop"]
-    T -->|"delivered"| Q
-    T -->|"blocked or no truck"| Q
-    Q --> S["Situation report<br/>Gemini, rule fallback"]
+    P["Phone /report<br/>text, photo, voice, GPS"] --> I["Intake<br/>Gemini multimodal"]
+    C["Console"] --> I
+    I --> D{"Same need<br/>already open?"}
+    D -->|yes| M["Merge<br/>one request"]
+    D -->|no| Q[("Incident queue")]
+    M --> Q
+    Q --> W["Dispatch wave<br/>learned strategy,<br/>OSM road distances"]
+    W --> R["Route per truck<br/>stock loaded,<br/>truck busy"]
+    R --> DR["Driver phone<br/>/driver/link"]
+    DR -->|delivered| L["Learn<br/>score, ETA correction"]
+    DR -->|"failed / not reached"| Q
+    DR -->|road blocked| H["Hazard<br/>later routes avoid it"]
+    H --> Q
+    Q --> T["Reporter<br/>/track/link"]
 ```
 
-- **Reports** from the phone page and the console go through the same multimodal intake. Each recognised need becomes an incident with status `waiting`. When the phone shares GPS and the position is inside Chennai, it places the incident instead of the coordinates guessed from the text.
-- **A wave** plans one dispatch round over every waiting incident with the strategy that has the best learned score (usually `rl_policy`). Depot stock goes down with every delivery. Incidents become `delivered`, are partly served, or stay `waiting` with a note explaining why (road blocked, no truck space). A collapsed road is kept as a hazard, so later waves avoid it.
-- **The situation report** summarises the operation for a coordinator: headline, overview, priorities, blocked roads, stock alerts and recommended actions. Gemini writes it from the live data only. Stock alerts are always computed exactly (items under 100 units) rather than left to Gemini. If Gemini is unavailable, a rule-based report with the same sections is produced instead.
-- **State** is one JSON document. With `FIREBASE_SERVICE_ACCOUNT` set it lives in Cloud Firestore, shared by every server instance; every change is a conditional write that retries if another instance changed the document first, so concurrent reports and waves never overwrite each other. Without Firestore it is a file on the instance, and the coordinator's browser keeps a copy that restores it after a restart. The console polls every 5 seconds, so phone reports appear without a reload.
+- **Reports** from the phone page and the console go through the same multimodal intake.
+  - A phone's GPS position, when inside Chennai, replaces the coordinates guessed from the text.
+  - A need is merged into an open request when the item is the same, the place is within 0.5 km and it was reported in the last 12 hours. The larger quantity and the higher urgency win, so two people describing one camp never send two trucks.
+  - Every report gets a tracking link that shows the reporter only their own requests.
+- **A wave** plans over every waiting incident, using only the trucks that are free, their own capacities and the depots' current stock. It uses the strategy with the best learned score (usually `rl_policy`).
+  - Distances come from a road distance table computed on OpenStreetMap, with every active hazard sent as an area to avoid.
+  - Each truck with stops then gets a real road route with geometry and ETAs. ETAs include 10 minutes of unloading per earlier stop, multiplied by the learned ETA correction.
+  - Stock leaves the depot when the truck is loaded, and the truck stays busy until its route closes.
+- **Drivers** open their truck's link and mark each stop:
+  - **delivered** (in full or a smaller amount)
+  - **could not deliver** (with a reason)
+  - **road blocked** (with their GPS position)
+
+  When the last stop is recorded, the route closes. Undelivered relief goes back into the queue and unused cargo back into stock.
+- **The feedback loop** turns every closed route into learning:
+  - **Score:** an urgency-weighted share of the loaded relief that reached people, recorded per strategy.
+  - **ETA correction:** arrival times nudge a learned factor (actual time divided by the router's estimate) that every future ETA uses. Taps made seconds after dispatch are ignored, because they are not arrivals.
+  - **Lessons:** failed and blocked stops become lessons for the planner.
+  - **Hazards:** a blocked road becomes a hazard immediately, so the next wave routes around it. The coordinator clears it when the road reopens.
+- **Resources** are managed at runtime: open depots, add trucks of any size, take trucks out of service, recall a route, log incoming supplies, close requests that need no delivery. Every change is written to the activity log with who made it.
+- **The situation report** summarises the operation: priorities, trucks out, blocked roads, stock alerts and recommended actions.
+  - Gemini writes it from the live data only.
+  - Stock alerts are always computed exactly (items under 100 units) rather than left to Gemini.
+  - If Gemini is unavailable, a rule-based report with the same sections is produced.
+- **Coordinator sign-in** is optional. With it on, only listed Google accounts can dispatch, manage resources or reset, and everyone else sees a read-only console without driver links. Reporters and drivers never sign in; their links are the credential.
+- **State** is one JSON document in Cloud Firestore when `FIREBASE_SERVICE_ACCOUNT` is set, shared by every server instance. Every change is a conditional write that retries if another instance changed the document first, so simultaneous reports, waves and driver updates never overwrite each other. The console polls every 5 seconds.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    subgraph Client["Browser"]
-        UI["static/index.html<br/>report form, map, event log, charts"]
+    subgraph Clients["Browsers and agents"]
+        UI["Console<br/>static/index.html"]
+        PH["Reporter phone<br/>report.html, track.html"]
+        DRV["Driver phone<br/>driver.html"]
+        EXT["Other agents<br/>Gemini CLI, Google ADK"]
     end
-    EXT["Other agents<br/>Gemini CLI, Google ADK"]
     subgraph Server["FastAPI app on Vercel"]
-        API["main.py<br/>REST API"]
+        API["main.py<br/>REST API, sign-in check"]
         MCP["mcp_server.py<br/>MCP endpoint"]
-        AG["agent.py<br/>intake, planning, guardrails,<br/>failover, reflection, bandit"]
-        SIM["env.py<br/>flood simulator<br/>reset / step / state"]
-        MEM[("Memory<br/>lessons, policy stats, scores")]
+        OPS["ops.py<br/>queue, waves, routes,<br/>drivers, resources"]
+        AG["agent.py<br/>intake, planning, guardrails,<br/>failover, learning"]
+        SIM["env.py<br/>simulator and planner sandbox"]
+        RD["roads.py<br/>road routing"]
     end
-    subgraph Google["Google APIs"]
+    subgraph Google["Google"]
         GEM["Gemini API"]
-        ROUTES["Maps Routes API"]
+        FS[("Cloud Firestore<br/>operation, memory")]
+        FA["Firebase Auth<br/>coordinator sign-in"]
     end
-    UI -->|HTTPS| API
+    OSM["OpenStreetMap routing<br/>Valhalla, no key"]
+    UI --> API
+    PH --> API
+    DRV --> API
     EXT -->|JSON-RPC| MCP
-    API --> AG
+    UI -.->|Google sign-in| FA
+    API --> OPS
+    MCP --> OPS
     MCP --> AG
+    OPS --> AG
+    OPS --> RD
     AG <--> SIM
-    AG <--> MEM
     AG --> GEM
-    AG --> ROUTES
+    OPS <--> FS
+    AG <--> FS
+    RD --> OSM
 ```
 
-- **Agent (`agent.py`)** holds all the decision logic. Both the web API and the MCP server call the same functions.
-- **Simulator (`env.py`)** follows the OpenEnv contract (`reset`, `step`, `state`). It runs in-process, so an episode with the rule-based strategies takes milliseconds. `relief_openenv/` packages the same simulator as an OpenEnv environment server.
+- **Agent (`agent.py`)** holds the decision logic: multimodal intake, planning strategies, the guardrail, Gemini failover, reflection, the bandit and learning from field outcomes.
+- **Live operations (`ops.py`)** run the dispatch loop: queue, duplicate merging, waves, routes, driver updates, resources and situation reports. The web API and the MCP server call the same functions.
+- **Simulator (`env.py`)** follows the OpenEnv contract (`reset`, `step`, `state`). Training plays thousands of episodes in it. A live wave uses it as a sandbox for planning, with the real depots, free trucks and road distances. `relief_openenv/` packages the same simulator as an OpenEnv environment server.
 - **Learned policy (`policy.py`)** runs the network trained by `rl/train_policy.py` in plain Python from `policy_weights.json`, so the deployed app needs no PyTorch.
-- **Memory** is a JSON document: lessons, per-strategy statistics and episode history. The browser keeps a copy and sends it back with each request. If a serverless instance restarts and loses its copy, learning is restored from the browser.
-- **External calls go only to Google APIs:** Gemini for understanding, planning and reflection, and the Maps Routes API for travel times.
+- **Road routing (`roads.py`)** asks a Valhalla server on OpenStreetMap data for distance tables and truck routes, with active hazards as areas to avoid. If it fails, it falls back to straight-line estimates and the log says so.
+- **State (`store.py`)** is two JSON documents, the operation and the agent's memory, in Cloud Firestore with conditional writes, or local files for development.
+- **Coordinator sign-in (`auth.py`)** verifies Firebase ID tokens (Google accounts) against a list of coordinator emails.
+- **Every keyed API is Google's:** Gemini, Firestore and Firebase Authentication. Road routing uses the public OpenStreetMap Valhalla server, which needs no key. The Google Maps Routes API is still wired into the simulator for travel times when a key with that API is available.
 
 The request lifecycle, simulator rules, scoring formula, learning loop and every failure path are documented with diagrams in [docs/architecture.md](docs/architecture.md).
 
@@ -155,12 +212,12 @@ The request lifecycle, simulator rules, scoring formula, learning loop and every
 
 | Requirement | How ReliefRoute does it | Where |
 |---|---|---|
-| End to end | One request goes from raw report to understood needs, plan, dispatch, recovery, score and lesson, with no human step | `agent.run_episode` |
-| Multimodal | Text, images and audio go to Gemini in a single call. The browser converts microphone recordings to WAV. | `agent.intake`, `static/index.html` |
-| Feedback loop | Every episode's score updates the policy and the lesson memory, and both shape the next episode | `agent.run_episode`, `agent.reflect` |
-| Self-learning | 1. A neural dispatch policy trained with REINFORCE (PyTorch) in the simulator: weights updated over 6,000 episodes. 2. An epsilon-greedy bandit learns online which strategy scores best. 3. Gemini writes lessons that are injected into later planning prompts. | `rl/train_policy.py`, `agent.select_strategy`, `agent.llm_plan` |
-| Self-healing | Replanning after blocked routes; guardrail repair of bad plans; retries; a quota circuit breaker with model failover; a rule-based fallback for every Gemini step; distance estimates when Maps fails; memory restore after cold starts | `agent.repair`, `agent.gemini_json`, `agent.maps_eta`, `agent.sync_memory` |
-| Google APIs only | Gemini API and Google Maps Routes API, called with Google API keys | `agent.py` |
+| End to end | A phone report becomes an incident, a planned road route, a driver's stop, a delivery and a lesson. The steps in between need no human. In live operations a person stays in charge of when to dispatch and does the driving. | `ops.py`, `agent.run_episode` |
+| Multimodal | Text, images and audio go to Gemini in a single call. The browser converts microphone recordings to WAV. | `agent.intake`, `static/report.html` |
+| Feedback loop | In the simulator, every episode's score updates the policy and lesson memory. In live operations, drivers' outcomes update the field score per strategy, the ETA correction and the lessons, and blocked roads change the next routes. | `agent.record_field_route`, `ops.driver_update` |
+| Self-learning | 1. A neural dispatch policy trained with REINFORCE (PyTorch) in the simulator. 2. An epsilon-greedy bandit learns online which strategy scores best. 3. Gemini writes lessons that are injected into later planning prompts. 4. A travel-time correction learned from drivers' real arrival times. | `rl/train_policy.py`, `agent.select_strategy`, `agent.record_field_route` |
+| Self-healing | Rerouting around blocked roads (simulated collapses and drivers' reports); guardrail repair of bad plans; retries; a quota circuit breaker with model failover; a rule-based fallback for every Gemini step; straight-line estimates when the road router fails; conditional writes that retry on conflicts; duplicate reports merged instead of double-dispatched | `agent.repair`, `agent.gemini_json`, `ops.run_wave`, `store.update` |
+| Google APIs | Gemini, Cloud Firestore and Firebase Authentication, all with Google keys. Road routing uses OpenStreetMap, which needs no key. | `agent.py`, `store.py`, `auth.py`, `roads.py` |
 | Deployable | Live on Vercel. A Dockerfile is included for Cloud Run. | `Dockerfile` |
 | MCP | The agent's tools are exposed over MCP (Streamable HTTP) | `mcp_server.py` |
 
@@ -274,8 +331,13 @@ Open http://localhost:8080.
 | `GEMINI_MODELS` | no | `gemini-flash-latest,gemini-3.8-flash,gemini-3.5-flash-lite` | Order in which models are tried |
 | `MEMORY_PATH` | no | `memory.json` (`/tmp/memory.json` on Vercel) | Where memory is stored |
 | `OFFLINE` | no | – | Set to `1` to force rule-based mode, even when a key is present |
-| `FIREBASE_SERVICE_ACCOUNT` | no | – | Service-account key JSON (raw or base64). When set, memory and the live operation are stored in Cloud Firestore and shared by every server instance; otherwise local JSON files are used. |
+| `FIREBASE_SERVICE_ACCOUNT` | for a deployment | – | Service-account key JSON (raw or base64). When set, memory and the live operation are stored in Cloud Firestore and shared by every server instance; otherwise local JSON files are used. |
 | `GEMINI_DAILY_BUDGET` | no | `300` | Gemini calls one server instance may make per UTC day. Past it, the agent uses its rule-based fallbacks. |
+| `ROUTER_URL` | no | `https://valhalla1.openstreetmap.de` | Valhalla road router. `off` disables road routing (straight-line estimates). |
+| `COORDINATOR_EMAILS` | no | – | Comma-separated Google accounts allowed to coordinate. Together with `FIREBASE_WEB_API_KEY` it turns coordinator sign-in on. |
+| `FIREBASE_WEB_API_KEY` | no | – | The Firebase web app's `apiKey` (public by design) |
+| `FIREBASE_PROJECT_ID` | no | the service account's project | Firebase project for sign-in |
+| `OPS_PATH` | no | `ops.json` (`/tmp/ops.json` on Vercel) | Where the live operation is stored without Firestore |
 
 ### Tests
 
@@ -283,25 +345,29 @@ Open http://localhost:8080.
 pytest -q
 ```
 
-The 24 tests run without network access or an API key. The OpenEnv test is skipped if the `openenv` package isn't installed. They cover:
+The 28 tests run without network access or an API key. Gemini, the road router and Firebase sign-in are replaced by fakes. The OpenEnv test is skipped if the `openenv` package isn't installed. They cover:
 - the simulator contract and truck rules: capacity, stop order, arrival times, a full fleet
 - recovery after a blocked route
 - guardrail repair
 - the trained policy running without PyTorch
 - the bandit learning to avoid the weakest strategy
 - scores staying within 0–100% across 120 episodes
-- memory restore after a cold start
 - the quota circuit breaker and the daily Gemini budget
 - per-client rate limits
 - keyword intake
 - the MCP handshake and tool calls
 - the OpenEnv environment and server
+- Firestore conditional writes under a concurrent update
 - live operations:
-  - phone reports placed by GPS
-  - waves updating stock and statuses
-  - collapsed roads persisting
-  - restore from the browser copy
-  - the situation report fallback
+  - phone reports placed by GPS, with a working tracking link
+  - duplicate reports merged
+  - waves loading stock and sending trucks out
+  - drivers delivering in full or in part, failing, or reporting a blocked road, and what each one does to the queue, stock, hazards and memory
+  - the learned ETA correction
+  - recalls, depots, trucks, restocks and closing requests, with their guards
+  - hazards sent to the router as areas to avoid, and the fallback when the router is down
+  - coordinator sign-in protecting every change, and driver links hidden from the public view
+  - the situation report and its fallback
 - the full web flow
 
 ## Use it from another agent (MCP)
@@ -313,6 +379,7 @@ The MCP endpoint is stateless Streamable HTTP with JSON responses.
 | `parse_field_report` | `text` | Structured needs and hazards |
 | `dispatch_relief` | `text`, optional `chaos` | Deliveries, self-heal events, score and new lessons |
 | `train_agent` | optional `episodes` (1–5) | Strategy and score for each episode |
+| `get_operation` | – | Live figures, waiting incidents, trucks on routes with their stops, active hazards |
 | `get_memory` | – | Lessons, policy statistics and recent scores |
 
 List the tools:
@@ -352,15 +419,26 @@ reliefroute = McpToolset(connection_params=StreamableHTTPConnectionParams(url="h
 | `POST` | `/api/train` | JSON `{"episodes": 1-20, "chaos": true}`. Runs simulated episodes. |
 | `GET` | `/api/scenario` | A sample scenario for the initial map |
 | `GET` | `/api/memory` | Current memory |
-| `POST` | `/api/memory/reset` | Clear memory |
+| `POST` | `/api/memory/reset` | Clear memory (coordinator) |
 | `POST` | `/mcp` | MCP JSON-RPC endpoint |
+| `GET` | `/api/config`, `/api/me` | Sign-in configuration for the browser; whether the caller is a coordinator |
 | `GET` | `/report` | Field reporter phone page |
-| `POST` | `/api/reports` | Multipart form: `text`, optional `image`, `audio`, `lat`, `lng`, `source`. Adds incidents to the operation. |
-| `GET` | `/api/ops` | Operation state and summary figures |
-| `POST` | `/api/ops/wave` | JSON `{"chaos": false}`. Dispatches one wave over all waiting incidents. Returns 409 if nothing is waiting. |
-| `POST` | `/api/ops/sitrep` | Situation report as text plus structured sections |
-| `POST` | `/api/ops/sync` | Restores an operation from the browser's copy after a server restart |
-| `POST` | `/api/ops/reset` | Starts a new operation: empty queue, restocked depots |
+| `POST` | `/api/reports` | Multipart form: `text`, optional `image`, `audio`, `lat`, `lng`, `source`. Adds or merges incidents and returns a `track_url`. |
+| `GET` | `/api/ops` | Operation state and summary figures. Driver links only for coordinators. |
+| `POST` | `/api/ops/wave` | Plans and sends out one wave over all waiting incidents (coordinator). 409 if nothing is waiting or no truck is free. |
+| `POST` | `/api/ops/sitrep` | Situation report as text plus structured sections (coordinator) |
+| `POST` | `/api/ops/reset` | Starts a new operation (coordinator) |
+| `POST` | `/api/ops/depots` | JSON `{"name", "lat", "lng"}`: opens a depot (coordinator) |
+| `POST`, `PATCH` | `/api/ops/trucks`, `/api/ops/trucks/{id}` | Adds a truck `{"depot_id", "capacity"}`; changes `capacity` or `in_service` (coordinator) |
+| `POST` | `/api/ops/restock` | JSON `{"depot_id", "item", "qty", "note"}`: logs incoming supplies (coordinator) |
+| `POST` | `/api/ops/routes/{id}/recall` | Ends a route early; unvisited stops return to the queue (coordinator) |
+| `POST` | `/api/ops/hazards/{id}/clear` | Marks a road reopened (coordinator) |
+| `POST` | `/api/ops/incidents/{id}/close` | JSON `{"reason"}`: closes a request that needs no delivery (coordinator) |
+| `GET` | `/driver/{token}`, `/api/driver/{token}` | Driver page and the truck's current route |
+| `POST` | `/api/driver/{token}/stops/{n}` | JSON `{"outcome": "delivered" \| "failed" \| "blocked", "qty", "note", "lat", "lng"}` |
+| `GET` | `/track/{token}`, `/api/track/{token}` | Reporter's status page and data |
+
+"(coordinator)" means a signed-in coordinator when sign-in is on; with it off, the console is open to anyone with the link.
 
 Each client address is limited, per 10 minutes, to:
 
@@ -371,6 +449,8 @@ Each client address is limited, per 10 minutes, to:
 | Waves | 30 |
 | Situation reports | 6 |
 | Training requests | 60 |
+| Resource changes | 60 |
+| Driver stop updates | 120 |
 | Costly MCP tool calls | 10 |
 | Resets | 5 |
 
@@ -386,12 +466,15 @@ Over a limit, the server returns HTTP 429 with a `Retry-After` header.
 | `policy_weights.json` | Trained policy weights |
 | `rl/train_policy.py`, `rl/results.json` | PyTorch REINFORCE training and its evaluation results |
 | `relief_openenv/` | The simulator as an OpenEnv environment: models, server, client, manifest, Dockerfile |
-| `main.py` | FastAPI server: web app, REST API, MCP route, rate limits |
+| `main.py` | FastAPI server: web app, REST API, MCP route, sign-in checks, rate limits |
 | `mcp_server.py` | MCP protocol handling and tool definitions |
-| `ops.py` | Live operations: incident queue, dispatch waves, browser restore, situation reports |
+| `ops.py` | Live operations: queue and merging, waves, routes, drivers, resources, tracking, situation reports |
+| `roads.py` | Road distance tables and truck routes on OpenStreetMap (Valhalla), hazards avoided |
+| `auth.py` | Coordinator sign-in: Firebase ID token verification |
 | `store.py` | Storage: Cloud Firestore over REST with conditional writes, or local JSON files |
 | `static/index.html` | The coordinator console with Operations and Simulator tabs (single file, no build step) |
-| `static/report.html` | The field reporter phone page |
+| `static/report.html`, `static/track.html` | The field reporter phone page and the reporter's status page |
+| `static/driver.html` | The driver's route page |
 | `test_app.py` | Automated tests |
 | `Dockerfile` | Container image for Cloud Run or any container host |
 | `docs/architecture.md` | Diagrams and technical reference |
@@ -404,7 +487,17 @@ The live app runs on Vercel, which detects the FastAPI app in `main.py` automati
 npx vercel deploy --prod
 ```
 
-Set `GEMINI_API_KEY` under the project's Environment Variables first. The live deployment sets `GEMINI_MODELS=gemini-3.5-flash-lite,gemini-flash-latest,gemini-3.8-flash`, which starts with the model that has the most free-tier quota.
+Set these under the project's Environment Variables first:
+- `GEMINI_API_KEY`
+- `FIREBASE_SERVICE_ACCOUNT`: a service-account key from a Firebase project with a Firestore database (the free Spark plan is enough)
+
+The live deployment also sets `GEMINI_MODELS=gemini-3.5-flash-lite,gemini-flash-latest,gemini-3.8-flash`, which starts with the model that has the most free-tier quota.
+
+To turn on coordinator sign-in:
+1. In the same Firebase project, open **Authentication → Sign-in method** and enable **Google**.
+2. Under **Authentication → Settings → Authorized domains**, add your deployment's domain.
+3. Under **Project settings → General → Your apps**, register a web app and copy its `apiKey`.
+4. Set `FIREBASE_WEB_API_KEY` to that key and `COORDINATOR_EMAILS` to the coordinators' Google accounts.
 
 To run on Google Cloud Run instead, use the included Dockerfile. This needs a project with billing enabled:
 
@@ -414,21 +507,22 @@ gcloud run deploy reliefroute --source . --region asia-south1 --allow-unauthenti
 
 ## Known limitations
 
-- **Google Maps travel times are not live yet.** The Routes API call is implemented, but the deployed key is not authorised for that API (it returns `401`). Enabling the Routes API requires a Google Cloud project with billing, and ours is closed. The agent falls back to distance estimates, and the log labels those ETAs "estimate". Setting `MAPS_API_KEY` to a key with the Routes API enabled switches to real travel times with no code change.
+- **Road routing uses a public server.** Live routes come from the public FOSSGIS Valhalla instance on OpenStreetMap data. It is free, has no service guarantee, and asks for fair use; a real deployment should run its own Valhalla (`ROUTER_URL`). Drive times assume normal roads, so the learned ETA correction is what adapts them to flood conditions. When the router is unreachable, the agent plans on straight-line estimates and says so. The Google Maps Routes API is not used for live routes: it needs a Google Cloud project with billing, and ours is closed.
+- **Hazards are circles.** A reported flood or a driver's blocked road is an area of fixed radius (0.8 km for reports, 0.5 km from drivers), not the exact flooded segment. A hazard that covers a stop itself cannot be avoided and is not sent to the router.
 - **Gemini quota is limited.** The deployment uses the Gemini free tier, which allows few requests per day. When a model is exhausted, the circuit breaker moves to the next one. If every model is exhausted, the agent continues on rule-based intake and planning, which only understands English keywords and known area names.
-- **The scenario data is simulated.** Depot stock, the other requests, flood zones and the bridge collapse are all simulated. Locations are real Chennai localities with approximate coordinates. Distances are straight-line multiplied by a 1.3 road factor, not a road network.
-- **Shared state needs Firestore.** With `FIREBASE_SERVICE_ACCOUNT` set, memory and the live operation are stored in Cloud Firestore and shared by all server instances. Without it they are JSON files on one serverless instance (plus a copy in the coordinator's browser), which are not shared between instances that run at the same time.
-- **The RL policy is trained offline and is small.** Its weights are updated in training, not while the app runs; online learning is the bandit and the Gemini lessons. It matches the best hand-written rule rather than clearly beating it. Gemini itself is not fine-tuned.
-- **There is no authentication.** Anyone with the link can submit field reports, dispatch waves and reset the operation or memory. Per-address rate limits and a daily Gemini budget cap the damage, but both are kept per server instance. The MCP server is minimal: tools only, no sessions or streaming.
+- **Duplicate detection is a rule.** Same item, within 0.5 km, within 12 hours. Two genuinely different groups that close together are merged, and the coordinator sees the report count on the request.
+- **Links are the credentials for drivers and reporters.** Anyone holding a truck's driver link can record its stops, and a new operation issues new links. Coordinator sign-in is off until it is configured (see Deployment); while it is off, anyone with the console link can dispatch and reset. Rate limits and the daily Gemini budget are kept per server instance.
+- **The simulator data is simulated.** In the Simulator tab, depot stock, the other requests, flood zones and the bridge collapse are generated, and distances are straight lines times 1.3. Live operations use real roads but start from three example depots with 400 units of each item.
+- **The RL policy is trained offline and is small.** Its weights are updated in training, not while the app runs; online learning is the bandit, the lessons and the field feedback. It matches the best hand-written rule rather than clearly beating it. Gemini itself is not fine-tuned.
+- **One document per operation.** The live operation is a single Firestore document (limit 1 MiB). Old routes drop their road geometry to stay small, which is enough for thousands of incidents but not for a city-wide operation over weeks.
 
 ## Next steps
 
 - Train a small open language model as the planner with GRPO (Hugging Face TRL) against the `relief_openenv` server.
-- Give the RL policy truck-aware features (load, current position) so it can learn routing that beats the rules.
-- Store memory in Firestore so learning is shared and durable.
-- Use the Routes API route matrix for real road distances, and the Route Optimization API for the truck routes.
-- Connect real depot inventory and a phone or SMS intake line.
-- Add authentication and per-organisation memory.
+- Retrain the RL policy on real road distances and on the field outcomes collected by live operations.
+- Use the Google Route Optimization API (or a self-hosted solver) for the truck routes once a billed project is available.
+- Split the operation into per-incident documents for very large operations, and add per-organisation workspaces.
+- Connect real depot inventory and an SMS or WhatsApp intake line.
 
 ## Author
 

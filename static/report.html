@@ -42,6 +42,12 @@
   .card ul { margin:6px 0 0; padding-left:20px; }
   .card button { margin-top:12px; min-height:46px; width:100%; border:2px solid var(--text); background:none;
                  border-radius:10px; font:600 16px "IBM Plex Sans", sans-serif; cursor:pointer; color:var(--text); }
+  .card a.track { display:flex; align-items:center; justify-content:center; margin-top:12px; min-height:46px; border-radius:10px;
+                  background:var(--text); color:#fff; font:600 16px "IBM Plex Sans", sans-serif; text-decoration:none; }
+  .mine h2 { font-size:15px; color:var(--muted); font-weight:600; margin:22px 0 6px; }
+  .mine a { display:flex; justify-content:space-between; gap:10px; padding:10px 0; border-bottom:1px solid var(--line);
+            color:var(--text); text-decoration:none; font-size:15px; }
+  .mine a small { color:var(--muted); white-space:nowrap; }
   footer { margin-top:22px; color:var(--muted); font-size:13px; }
   footer a { color:var(--muted); }
 </style>
@@ -66,6 +72,7 @@
   </form>
 
   <div id="result"></div>
+  <div id="mine" class="mine"></div>
 
   <footer>Location is used only to place your report on the dispatch map. <a href="/">Coordinator console</a></footer>
 </main>
@@ -132,6 +139,21 @@ $("recTile").onclick = async () => {
   } catch { $("recState").textContent = "Mic blocked"; }
 };
 
+// Tracking links of reports sent from this phone, newest first
+const MINE = "reliefroute-my-reports";
+function mine() { try { return JSON.parse(localStorage.getItem(MINE)) || []; } catch { return []; } }
+function saveMine(body) {
+  const what = [...body.incidents, ...body.merged].map(i => `${i.zone}: ${i.item}`).join(", ") || "Report";
+  try { localStorage.setItem(MINE, JSON.stringify([{ url: body.track_url, what, at: Date.now() }, ...mine()].slice(0, 10))); } catch {}
+  showMine();
+}
+function showMine() {
+  const list = mine();
+  $("mine").innerHTML = list.length ? `<h2>Your requests</h2>` + list.map(m =>
+    `<a href="${esc(m.url)}">${esc(m.what)}<small>${new Date(m.at).toLocaleString([], { hour: "2-digit", minute: "2-digit", day: "numeric", month: "short" })}</small></a>`).join("") : "";
+}
+showMine();
+
 function show(cls, html) { $("result").innerHTML = `<div class="card ${cls}">${html}</div>`; $("result").scrollIntoView({ behavior: "smooth" }); }
 
 $("form").onsubmit = async e => {
@@ -148,11 +170,15 @@ $("form").onsubmit = async e => {
     const r = await fetch("/api/reports", { method: "POST", body: fd });
     const body = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(body.detail || `Server error ${r.status}`);
-    const items = body.incidents.map(i => `<li>${esc(i.zone)}: ${i.qty} ${esc(i.item)}, urgency ${i.urgency}${i.located_by === "gps" ? " · placed by GPS" : ""}</li>`).join("");
-    show("ok", `<h2>Received · ${body.incidents.length} request(s) queued</h2>` +
+    const items = body.incidents.map(i => `<li>${esc(i.zone)}: ${i.qty} ${esc(i.item)}, urgency ${i.urgency}${i.located_by === "gps" ? " · placed by GPS" : ""}</li>`).join("") +
+      body.merged.map(i => `<li>${esc(i.zone)}: ${esc(i.item)} was already reported by others (${i.reports} reports); yours is added to it</li>`).join("");
+    const n = body.incidents.length + body.merged.length;
+    show("ok", `<h2>Received · ${n} request(s)</h2>` +
       (items ? `<ul>${items}</ul>` : `<p>No specific supplies were recognised. The desk can still read your message.</p>`) +
       (body.intake.hazards.length ? `<p>Road hazards noted: ${body.intake.hazards.map(h => esc(h.label)).join(", ")}</p>` : "") +
+      `<a class="track" href="${esc(body.track_url)}">Track this request</a>` +
       `<button type="button" id="again">Send another report</button>`);
+    saveMine(body);
     try { localStorage.removeItem(DRAFT); } catch {}
     $("again").onclick = () => {
       $("form").reset(); $("text").value = ""; recBlob = null; coords = null; $("result").innerHTML = "";

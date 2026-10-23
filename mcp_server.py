@@ -7,6 +7,7 @@ or Google ADK: McpToolset(connection_params=StreamableHTTPConnectionParams(url="
 import json
 
 import agent
+import ops
 
 SUPPORTED_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"]
 
@@ -28,6 +29,9 @@ TOOLS = [
      "description": "Run simulated disaster episodes so the agent improves its policy and lesson memory.",
      "inputSchema": {"type": "object",
                      "properties": {"episodes": {"type": "integer", "minimum": 1, "maximum": 5, "default": 1}}}},
+    {"name": "get_operation",
+     "description": "Live operation status: figures, waiting incidents, trucks on routes and active road hazards.",
+     "inputSchema": {"type": "object", "properties": {}}},
     {"name": "get_memory",
      "description": "Learned lessons, per-strategy policy stats and score history.",
      "inputSchema": {"type": "object", "properties": {}}},
@@ -50,6 +54,15 @@ def _call(name, args):
     if name == "train_agent":
         episodes, _ = agent.train(max(1, min(5, int(args.get("episodes", 1)))))
         return {"episodes": episodes}
+    if name == "get_operation":
+        st = ops.load()
+        return {"summary": ops.summary(st),
+                "waiting": [{k: i[k] for k in ("id", "zone", "item", "qty", "urgency", "note")}
+                            for i in st["incidents"] if i["qty"] > 0 and not i["closed"]],
+                "routes": [{"id": r["id"], "truck": r["truck_id"],
+                            "stops": [{k: s[k] for k in ("zone", "item", "qty", "status", "eta_min")} for s in r["stops"]]}
+                           for r in st["routes"] if r["status"] == "active"],
+                "hazards": [h["label"] for h in st["hazards"] if h["active"]]}
     mem = agent.load_memory()
     return {"lessons": mem["lessons"], "policy": mem["bandit"], "episodes": mem["episodes"][-20:]}
 

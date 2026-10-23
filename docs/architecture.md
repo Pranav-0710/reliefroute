@@ -21,15 +21,21 @@ This document explains how ReliefRoute works internally. For setup and a quick t
 
 ```mermaid
 flowchart TD
-    page["static/index.html<br/>operations console"] -.->|fetch| main["main.py<br/>FastAPI routes"]
+    page["static/*.html<br/>console, reporter, driver, tracking"] -.->|fetch| main["main.py<br/>FastAPI routes, sign-in check"]
     ext["MCP clients"] -.->|JSON-RPC| main
-    main --> agent["agent.py<br/>decision logic"]
+    main --> auth["auth.py<br/>Firebase ID tokens"]
+    main --> ops["ops.py<br/>live operations"]
     main --> mcp["mcp_server.py<br/>MCP protocol + tools"]
+    main --> agent["agent.py<br/>decision logic"]
     mcp --> agent
+    mcp --> ops
+    ops --> agent
+    ops --> roads["roads.py<br/>OSM road routing"]
     agent --> env["env.py<br/>flood simulator"]
     agent --> gemini["Gemini API<br/>via google-genai"]
-    agent --> routes["Maps Routes API<br/>via httpx"]
-    agent --> mem[("memory.json")]
+    ops --> store["store.py"]
+    agent --> store
+    store --> fs[("Firestore<br/>or local JSON")]
 ```
 
 | Module | Responsibility |
@@ -37,14 +43,16 @@ flowchart TD
 | `env.py` | Builds a flood scenario, executes delivery plans, injects the disruption, computes the reward. Pure Python, no I/O. |
 | `agent.py` | Everything the agent decides: intake, strategy choice, planning, plan repair, model failover, travel times, reflection, memory. |
 | `main.py` | HTTP layer. Turns requests into calls on `agent.py` and returns JSON. |
-| `mcp_server.py` | Implements the MCP methods and maps four tools onto `agent.py`. |
+| `mcp_server.py` | Implements the MCP methods and maps five tools onto `agent.py` and `ops.py`. |
 | `static/index.html` | The console: report form, pipeline, map, event log, performance panel. One file, no build step. |
 | `policy.py` | Features and decision procedure of the learned policy, plus inference in plain Python from `policy_weights.json`. |
 | `rl/train_policy.py` | Trains the policy with REINFORCE in PyTorch. Only needed offline. |
 | `relief_openenv/` | The simulator wrapped as an OpenEnv environment (typed models, server, client, manifest). |
-| `ops.py` | Live operations: incident queue, dispatch waves, restore from the browser, situation reports. |
+| `ops.py` | Live operations: incident queue and duplicate merging, dispatch waves, routes, driver updates, resources, tracking, situation reports. |
+| `roads.py` | Road distance tables and truck routes from a Valhalla server on OpenStreetMap, with hazards as areas to avoid; straight-line fallback. |
+| `auth.py` | Coordinator sign-in: verifies Firebase ID tokens and checks the coordinator list. |
 | `store.py` | Shared state storage: Cloud Firestore (REST, conditional writes with retry) or local JSON files. |
-| `static/report.html` | Field reporter phone page. |
+| `static/report.html`, `static/track.html`, `static/driver.html` | Field reporter page, the reporter's status page, and the driver's route page. |
 
 ## 2. Lifecycle of a dispatch
 
@@ -258,8 +266,14 @@ The latest 200 episodes are kept.
 | Gemini model out of quota (HTTP 429) | Error text `RESOURCE_EXHAUSTED` | Circuit breaker skips that model for 5 minutes, then the next model is tried immediately | `FAILOVER` |
 | Gemini transient error or bad JSON | Exception from the call or the parser | Retry once with backoff, then the next model | `FAILOVER` |
 | Every Gemini model fails | All attempts raise | Intake: keyword rules. Planning: `urgency_first`. Reflection: rule-based lessons. | `FALLBACK` |
-| Routes API fails | HTTP error or timeout (8 s) | Estimate from distance at 25 km/h | `FALLBACK` |
-| Serverless instance lost its memory | Browser copy has more episodes than the server's | Server adopts the browser copy after sanitising it | – |
+| Routes API fails (simulator ETAs) | HTTP error or timeout (8 s) | Estimate from distance at 25 km/h | `FALLBACK` |
+| Road router unreachable or too many stops (live) | HTTP error, timeout (12 s), or more than 40 points | Plan and route on straight-line estimates; the route is drawn dashed and labelled "estimate" | `FALLBACK` |
+| Driver reports a blocked road | Stop outcome `blocked` | New hazard at the driver's GPS position, incident back in the queue, next wave's router avoids the area | `BLOCKED`, `REROUTE` |
+| Delivery fails or a route is recalled | Stop outcome `failed`, or recall | Incident back in the queue with the reason; unused cargo back into stock; truck free again | `DRIVER` |
+| A truck leaves on another route while a wave is planned | Truck not idle when the wave is applied | That truck's stops stay queued for the next wave | `FALLBACK` |
+| The same need is reported twice | Same item, open, within 0.5 km and 12 hours | Merged into one request (larger quantity, higher urgency) | `MERGED` |
+| Two instances write the operation at once | Firestore precondition fails | Re-read and retry the change on fresh data | – |
+| Serverless instance lost its memory (file storage only) | Browser copy has more episodes than the server's | Server adopts the browser copy after sanitising it | – |
 
 ```mermaid
 flowchart LR
@@ -304,7 +318,7 @@ The model order comes from `GEMINI_MODELS`. The live deployment uses `gemini-3.5
 |---|---|
 | `initialize` | Echoes the client's protocol version if supported (`2025-06-18`, `2025-03-26`, `2024-11-05`), otherwise answers with the latest. Advertises the `tools` capability. |
 | `ping` | Empty result |
-| `tools/list` | The four tools with JSON Schema inputs |
+| `tools/list` | The five tools with JSON Schema inputs |
 | `tools/call` | Runs the tool. Returns `content` (JSON as text) and `structuredContent`. |
 | Notifications | Accepted with HTTP 202 and no body |
 | Batches | JSON arrays are processed message by message |
@@ -319,16 +333,22 @@ Exceptions inside a tool come back as a normal result with `isError: true`, so t
 
 ## 10. Deployment and state
 
-**Live hosting.** The app runs on Vercel as a serverless Python function (FastAPI zero-config). Instances start on demand and can be recycled, which affects state:
-- Memory is written to `/tmp/memory.json` on the instance.
-- The browser keeps a copy in `localStorage` and sends it with every dispatch and training request. If an instance restarts empty, `agent.sync_memory` restores the browser's copy, as long as it has more episodes.
+**Live hosting.** The app runs on Vercel as a serverless Python function (FastAPI zero-config). Instances start on demand and can be recycled, so state lives in Cloud Firestore:
+- The operation and the agent's memory are two Firestore documents, shared by every instance (see section 12).
+- Without Firestore (local development), they are `ops.json` and `memory.json`. On Vercel those are in `/tmp`, so an instance restart loses them. For memory, the browser's copy restores learning after such a restart.
 - Training sends one episode per request, so no single request runs long and the UI can show progress.
 
 **Cloud Run.** `Dockerfile` builds a container that serves the same app on `$PORT`. It is ready to deploy to Google Cloud Run once a billing-enabled project is available.
 
-**Secrets.** The Gemini key is stored as an encrypted Vercel environment variable. It is never in the repository.
+**Secrets.** The Gemini key and the Firestore service-account key are encrypted Vercel environment variables. Neither is in the repository. The Firebase web `apiKey` used for sign-in is public by design; it only identifies the project.
 
-**Protecting a public deployment.** The app has no login, so two limits keep one visitor from using up the shared Gemini quota or wiping memory:
+**Coordinator sign-in.** When `COORDINATOR_EMAILS` and `FIREBASE_WEB_API_KEY` are set:
+- The console loads the Firebase Authentication SDK and signs coordinators in with Google.
+- Every request carries the Firebase ID token. `auth.coordinator` verifies its signature, audience and expiry with Google's public keys, requires a verified email on the list, and caches the result until the token expires.
+- Waves, resource changes, resets, situation reports and memory resets need a coordinator. Everyone else gets a read-only view without driver links.
+- Reporters and drivers never sign in. A reporter's tracking link and a truck's driver link are 16-character random tokens. A new operation issues new driver links.
+
+**Protecting a public deployment.** Rate limits keep one visitor from using up the shared Gemini quota or flooding the operation:
 
 | Limit | Value | Where |
 |---|---|---|
@@ -336,13 +356,18 @@ Exceptions inside a tool come back as a normal result with `isError: true`, so t
 | Training requests per client address | 60 per 10 minutes | `main.check_rate` |
 | Costly MCP tool calls (`dispatch_relief`, `parse_field_report`, `train_agent`) | 10 per 10 minutes | `main.mcp` |
 | Memory resets | 5 per 10 minutes | `main.check_rate` |
+| Field reports | 12 per 10 minutes | `main.check_rate` |
+| Waves | 30 per 10 minutes | `main.check_rate` |
+| Situation reports | 6 per 10 minutes | `main.check_rate` |
+| Resource changes (depots, trucks, restocks, recalls, hazards) | 60 per 10 minutes | `main.check_rate` |
+| Driver stop updates | 120 per 10 minutes | `main.check_rate` |
 | Gemini calls per server instance per UTC day | `GEMINI_DAILY_BUDGET`, default 300 | `agent._spend_budget` |
 
 When a rate limit is hit, the response is HTTP 429 with `Retry-After`. MCP gets a JSON-RPC error `-32000`. When the daily budget is spent, every Gemini step falls back to its rule-based method, exactly as if the API were down. All counters are in memory per instance, so they are a guard, not an exact global quota.
 
 ## 11. Tests
 
-`test_app.py` runs with `OFFLINE=1` and a temporary memory file. No network access or key is needed.
+`test_app.py` runs with `OFFLINE=1` and temporary state files. Gemini, the road router and Firebase sign-in are replaced by fakes where a test needs them, so no network access or key is needed.
 
 | Test | What it proves |
 |---|---|
@@ -367,55 +392,107 @@ When a rate limit is hit, the response is HTTP 429 with `Retry-After`. MCP gets 
 | `test_daily_gemini_budget_degrades_to_rules` | The daily Gemini budget refuses calls once spent |
 | `test_firestore_writes_never_lose_a_concurrent_update` | Against a fake Firestore with real preconditions: a write that races another instance is rejected and retried, and both changes survive |
 | `test_operations_and_memory_run_on_firestore` | A report, a wave and a training episode all persist through the Firestore backend |
-| `test_operations_queue_wave_and_sitrep` | Phone report placed by GPS, a wave reducing stock by exactly what was delivered, delivered statuses with notes, rule-based situation report, reset, empty-queue 409 |
+| `test_operations_report_wave_driver_and_sitrep_over_the_api` | Over HTTP:<br/>- a phone report placed by GPS, with a working tracking link<br/>- a wave loading exactly the dispatched units off the depots and sending trucks out<br/>- the driver page and route, a driver closing a route<br/>- a repeated stop and an unknown link rejected<br/>- situation report, reset, empty-queue 409 |
+| `test_duplicate_reports_merge_instead_of_sending_two_trucks` | Same need nearby merges (larger quantity, higher urgency, report count); another place does not |
+| `test_failed_and_blocked_stops_return_to_queue_and_teach_the_agent` | A short delivery, a blocked road and a failed delivery:<br/>- queue and notes<br/>- a hazard at the driver's GPS<br/>- cargo returned to stock, trucks free<br/>- lessons, the ETA correction learned from a late arrival, and the next wave using it |
+| `test_recall_resources_and_their_guards` | Recall; new depot (outside Chennai refused); new truck (bad capacity refused); restock (unknown item refused); out of service (refused while on a route); closing a request |
+| `test_hazards_are_avoided_by_the_router_and_can_be_cleared` | Against a fake router: hazards sent as excluded areas, road geometry decoded, a hazard cleared; with the router down, the wave falls back to estimates and logs it |
+| `test_coordinator_sign_in_guards_every_change` | With sign-in on: no token, a wrong account and a forged token all get 401 on every protected action; reporters still report; driver links are hidden from the public view; the coordinator's email is recorded |
 | `test_sitrep_stock_alerts_are_never_left_to_gemini` | Stock alerts come from the exact rule even when Gemini writes the report |
-| `test_operation_keeps_collapsed_roads_and_restores_from_browser` | A wave's bridge collapse persists, the operation is restored from the browser copy after a reset, and junk in that copy is filtered |
 
 ## 12. Live operations
 
-`ops.py` turns the agent from "one report, one episode" into a running operation.
+`ops.py` turns the agent from "one report, one episode" into a running operation with real trucks, drivers and outcomes.
 
 ```mermaid
 sequenceDiagram
-    participant F as Phone page
+    participant F as Reporter phone
     participant C as Console
     participant API as main.py
     participant O as ops.py
     participant AG as agent.py
+    participant R as roads.py (OSM)
+    participant D as Driver phone
     F->>API: POST /api/reports (text, photo, voice, GPS)
     API->>AG: intake
-    API->>O: add_report: incidents I1, I2 waiting
-    C->>API: GET /api/ops every 5 s
-    API-->>C: queue, stock, hazards
-    C->>API: POST /api/ops/wave
+    API->>O: add_report: new incident, or merge into an open one
+    O-->>F: tracking link /track/...
+    C->>API: POST /api/ops/wave (coordinator)
     API->>O: run_wave
-    O->>AG: best_strategy, plan_round
-    O->>O: simulator step with live stock and hazards
-    O-->>C: deliveries, blocked, still waiting
-    C->>API: POST /api/ops/sitrep
-    API->>O: sitrep (Gemini, or rules)
-    O-->>C: report text
+    O->>R: distance table between depots and incidents, hazards avoided
+    O->>AG: best_strategy, plan_round (free trucks, real stock, road km)
+    O->>R: one road route per truck
+    O-->>C: routes and ETAs, stock loaded, trucks on route
+    D->>API: GET /api/driver/... (route, stops, road geometry)
+    D->>API: POST stop n: delivered / failed / blocked
+    API->>O: driver_update (queue, stock, hazard)
+    O->>AG: record_field_route when the route closes
+    C->>API: GET /api/ops every 5 s: driver events appear in the log
 ```
 
-**Operation state** (`ops.json`):
+**Operation state** (one document, `reliefroute/ops`):
 
 | Field | Contents |
 |---|---|
-| `incidents` | `id`, zone, coordinates, item, remaining `qty`, `requested`, urgency, `status` (`waiting` or `delivered`), source (`console` or `phone`), `located_by` (`gps` or `report`), `note`, report and delivery times |
-| `stock` | Units per item per depot. Starts at 400 each and goes down with every delivery. |
-| `hazards` | Hazards from reports, plus any bridge collapse from a wave. They stay until a new operation starts. |
-| `deliveries`, `waves` | History: what each wave delivered, with which truck and strategy |
-| `version` | Incremented on every change. Used to decide whether the browser copy is newer than the server's. |
+| `depots` | `id`, name, coordinates, `stock` per item. Starts with three depots at 400 units of each item; coordinators open more. |
+| `trucks` | `id`, `depot_id`, `capacity`, `status` (`idle`, `on_route`, `out_of_service`), `route_id`, and `token` (the secret in its driver link) |
+| `incidents` | `id`, zone, coordinates, item, `requested`, `qty` (still to send), `assigned` (on trucks), `delivered`, urgency, `status` (`waiting`, `en_route`, `delivered`, `closed`), `reports` (merged count), source, `located_by`, `note`, times |
+| `routes` | `id`, wave, truck, depot, `status` (`active`, `done`), strategy, `km`, `minutes`, `source` (`road` or `estimate`), `shape` (road geometry, at most 300 points), `eta_factor`, and `stops` (`n`, incident, item, `qty`, `eta_raw`, `eta_min`, `status`, `delivered_qty`, `note`, `at`) |
+| `hazards` | `id`, label, coordinates, `radius_km`, source (`console`, `phone`, `driver`), `active` |
+| `reports` | One per field report: tracking `token`, time, source, the incidents it created or merged into |
+| `waves`, `restocks`, `log` | History, incoming supplies, and an activity log of who did what |
+| `version`, `schema` | Change counter; document format (an older format is replaced by a fresh operation on first use) |
 
-**A wave** builds a simulator episode containing only the waiting incidents (no simulated requests, no random floods), the operation's stock and its hazards. It then plans one round with `agent.best_strategy`, the strategy with the best average score in memory (excluding `fifo`), and executes one simulator step.
+An incident's status follows from its quantities: `waiting` while some of it still has to be sent (`qty > 0`), `en_route` while the rest is on trucks, `delivered` when both are zero, `closed` when a coordinator closed it.
 
-Results are written back by incident id. The state is re-read under a lock, so reports that arrive while a wave is being planned are not lost:
-- delivered quantities reduce `qty` and depot stock
-- a fully served incident becomes `delivered`, with its truck, stop and arrival time in `note`
-- blocked and no-truck incidents keep `waiting`, with the reason in `note`
+**A wave**
+1. It takes every waiting incident, the trucks that are `idle` (with their own capacities) and the depots' current stock.
+2. It asks the road router for a distance table between all of those points, with every active hazard as an area to avoid. While planning, `env.road_distances` installs that table, so the simulator, the rule strategies and the learned policy all see road kilometres. A pair the router connected is never treated as crossing a hazard, because its road route already goes around it.
+3. It plans one round with `agent.best_strategy` (the strategy with the best average score, excluding `fifo`) inside a simulator episode that contains only these incidents, depots and trucks.
+4. For each truck with stops, it asks the router for the road route through the stops in order. That gives the geometry the driver sees and the drive time of every leg.
+   - The ETA of stop *k* is the drive time up to it, plus 10 minutes of unloading at each earlier stop, multiplied by the learned `eta_factor`.
+5. It applies the result in one atomic update, re-checking everything against fresh data (a report or a driver may have changed things meanwhile):
+   - Stock is taken off the depot.
+   - `qty` moves to `assigned`.
+   - The truck becomes `on_route`.
+   - A truck that became busy in between keeps its stops queued.
 
-**Storage and several instances** (`store.py`). With `FIREBASE_SERVICE_ACCOUNT` set, the operation and memory are Firestore documents (`reliefroute/ops`, `reliefroute/memory`, one string field `json`), read and written over the Firestore REST API with a service-account token. Every write carries the `updateTime` from its read as a precondition (`currentDocument.exists=false` for the first write). If another instance wrote in between, Firestore rejects the write and the read-modify-write is retried on fresh data, so a phone report and a wave planned on different instances never overwrite each other. Without Firestore the documents are local JSON files guarded by a process lock: fine for one instance, but two instances running at the same time each see their own state. The browser-copy restore is only used with file storage, and only adopts a copy from the same operation (or when the instance started empty), so a reset operation is never resurrected.
+If the router fails or the wave has more than 40 points, planning and routes use straight-line estimates, and the log says which.
 
-**GPS placement.** A phone report with a position inside the Chennai area places all of its incidents at that position. This replaces the coordinates Gemini inferred from the place name.
+**Drivers** (`/driver/<token>`) see their route on a map, with the stops in order, ETAs and a link to open each stop in their navigation app. For each stop they record:
 
-**Situation report.** `ops.sitrep` assembles the facts: figures, per-area waiting needs with wait times, hazards, stock and recent waves. Gemini turns them into headline, overview, priorities, blocked roads and actions, using only that data, and the output is validated and truncated field by field. Stock alerts are a threshold fact, so they always come from the rule and Gemini never sees raw stock levels; in testing it flagged healthy depots as alerts. Without Gemini, `_rule_sitrep` produces the same sections deterministically: priorities by urgency then wait time, stock under 100 units, and one action per open problem.
+| Outcome | Effect |
+|---|---|
+| `delivered` (all, or a smaller quantity) | `delivered` grows; any shortfall goes back to `qty`, so it is still dispatched |
+| `failed`, with a reason | The quantity goes back to `qty`; the reason is shown on the incident |
+| `blocked`, with a note and GPS | As failed, plus a new 0.5 km hazard at the driver's position (or halfway along the leg without GPS) |
+
+When the last stop is recorded the route closes:
+- Unused cargo returns to the depot's stock.
+- The truck is free again.
+- The outcome goes to `agent.record_field_route`.
+
+A coordinator can also recall a route; its unvisited stops are `skipped` and return to the queue.
+
+**Learning from the field** (`agent.record_field_route`):
+- **Score:** the urgency-weighted share of the loaded relief that was delivered, averaged per strategy in `memory.field`.
+- **ETA correction:** each delivered stop with a plausible arrival time moves `eta_factor` 20% of the way towards actual / router estimate, clamped to 0.5–3. A stop counts when it was recorded at least 30% of the estimate after dispatch, so taps seconds after dispatch do not count. Every later ETA uses the new factor.
+- **Lessons:** failed and blocked stops become lessons ("road to Velachery was blocked …"), which the Gemini planner reads with the others.
+
+**Duplicate merging.** A new need is merged into an existing incident when all of these hold:
+- same item
+- the incident is still open
+- within 0.5 km
+- reported in the last 12 hours
+
+The larger requested quantity and the higher urgency win, a GPS position improves a guessed one, and `reports` counts the reports. The reporter is told their report was added to an existing request, and their tracking link follows it.
+
+**Tracking** (`/track/<token>`) shows a reporter only the incidents from their own report: received, truck on the way (with the earliest ETA), delivered, and whether an earlier truck could not get through.
+
+**Storage and several instances** (`store.py`). With `FIREBASE_SERVICE_ACCOUNT` set, the operation and memory are Firestore documents (`reliefroute/ops`, `reliefroute/memory`, one string field `json`), read and written over the Firestore REST API with a service-account token.
+- Every write carries the `updateTime` from its read as a precondition (`currentDocument.exists=false` for the first write).
+- If another instance wrote in between, Firestore rejects the write and the change is retried on fresh data. So a phone report, a wave and a driver update handled by three different instances never overwrite each other.
+- An update that fails validation (for example a stop already recorded) raises before anything is written.
+- Without Firestore the documents are local JSON files guarded by a process lock. That is fine for one instance, not for several.
+
+**Situation report.** `ops.sitrep` assembles the facts: figures, per-area waiting needs with wait times, relief on trucks, active routes, hazards, stock and recent waves. Gemini turns them into headline, overview, priorities, blocked roads and actions, using only that data, and the output is validated and truncated field by field. Stock alerts are a threshold fact, so they always come from the rule and Gemini never sees raw stock levels; in testing it flagged healthy depots as alerts. Without Gemini, `_rule_sitrep` produces the same sections deterministically, including routes out for more than two hours.

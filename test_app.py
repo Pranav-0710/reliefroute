@@ -94,7 +94,7 @@ def test_mcp_protocol_and_tools():
     assert init["protocolVersion"] == "2025-06-18" and "tools" in init["capabilities"]
     assert c.post("/mcp", json={"jsonrpc": "2.0", "method": "notifications/initialized"}).status_code == 202
     names = {t["name"] for t in rpc("tools/list").json()["result"]["tools"]}
-    assert names == {"parse_field_report", "dispatch_relief", "train_agent", "get_memory"}
+    assert names == {"parse_field_report", "dispatch_relief", "train_agent", "get_operation", "get_memory"}
     out = rpc("tools/call", {"name": "dispatch_relief", "arguments": {"text": "Urgent 90 water in Adyar"}}).json()
     assert out["result"]["isError"] is False and out["result"]["structuredContent"]["deliveries"]
     assert rpc("tools/call", {"name": "nope"}).json()["error"]["code"] == -32602
@@ -214,8 +214,19 @@ def test_openenv_environment_and_server():
     assert "assignments" in str(schema)
 
 
-def test_operations_queue_wave_and_sitrep():
+def _need(zone, item, qty, urgency=3):
+    return agent._clean_need({"zone": zone, "item": item, "qty": qty, "urgency": urgency})
+
+
+def _tokens():
+    import ops
+
+    return {t["id"]: t["token"] for t in ops.load()["trucks"]}
+
+
+def test_operations_report_wave_driver_and_sitrep_over_the_api():
     import main
+    import ops
 
     main._hits.clear()
     c = TestClient(main.app)
@@ -224,23 +235,209 @@ def test_operations_queue_wave_and_sitrep():
                                      "source": "phone", "lat": "12.9790", "lng": "80.2200"}).json()
     assert [i["item"] for i in r["incidents"]] == ["water", "medicine"]
     assert all(i["located_by"] == "gps" and i["lat"] == 12.979 and i["status"] == "waiting" for i in r["incidents"])
-    assert c.get("/api/ops").json()["summary"]["waiting"] == 2
+    assert r["track_url"] == f"/track/{r['track']}" and "token" not in str(r["ops"]["reports"])
+    assert c.get(r["track_url"]).status_code == 200
+    assert [i["status"] for i in c.get(f"/api/track/{r['track']}").json()["incidents"]] == ["waiting", "waiting"]
 
-    w = c.post("/api/ops/wave", json={"chaos": False}).json()
-    units = sum(d["qty"] for d in w["deliveries"])
-    assert w["wave"]["n"] == 1 and units > 0
-    stock_left = sum(sum(items.values()) for items in w["ops"]["stock"].values())
-    assert stock_left == 3 * 4 * 400 - units  # depots start with 400 of each item
-    delivered = [i for i in w["ops"]["incidents"] if i["status"] == "delivered"]
-    assert delivered and all(i["qty"] == 0 and "arrives" in i["note"] for i in delivered)
+    w = c.post("/api/ops/wave").json()
+    units = sum(s["qty"] for route in w["routes"] for s in route["stops"])
+    assert w["wave"]["n"] == 1 and units == 240 and w["summary"]["trucks_out"] == len(w["routes"])
+    stock_left = sum(sum(d["stock"].values()) for d in w["ops"]["depots"])
+    assert stock_left == 3 * 4 * 400 - units  # loaded onto the trucks at dispatch
+    assert all(i["status"] == "en_route" for i in w["ops"]["incidents"])
+    assert c.post("/api/reports", data={"text": "40 blankets needed in Ennore"}).status_code == 200
+
+    route = w["routes"][0]
+    tok = _tokens()[route["truck_id"]]
+    assert c.get(f"/driver/{tok}").status_code == 200
+    dv = c.get(f"/api/driver/{tok}").json()
+    assert dv["route"]["id"] == route["id"] and dv["route"]["shape"]
+    for s in route["stops"]:
+        out = c.post(f"/api/driver/{tok}/stops/{s['n']}", json={"outcome": "delivered"}).json()
+    assert out["closed"] and out["learned"]["score"] == 100.0 and out["route"] is None
+    assert c.post(f"/api/driver/{tok}/stops/1", json={"outcome": "delivered"}).status_code == 409
+    assert c.get("/api/driver/not-a-real-token").status_code == 404
+    assert c.post(f"/api/driver/{tok}/stops/1", json={"outcome": "teleported"}).status_code == 409
 
     s = c.post("/api/ops/sitrep").json()
     assert s["generated_by"] == "rules" and s["text"].startswith("SITUATION REPORT")
     assert "Recommended actions" in s["text"]
-
     assert c.post("/api/ops/reset").json()["summary"]["waiting"] == 0
-    assert c.post("/api/ops/wave", json={}).status_code == 409  # nothing to dispatch
+    assert c.post("/api/ops/wave").status_code == 409  # nothing to dispatch
     assert c.post("/api/reports", data={"text": ""}).status_code == 400
+    assert ops.load()["log"][-1]["text"] == "Started a new operation"
+    main._hits.clear()
+
+
+def test_duplicate_reports_merge_instead_of_sending_two_trucks():
+    import ops
+
+    first = ops.add_report({"summary": "a", "hazards": [], "needs": [_need("Velachery", "water", 120, 3)]})
+    again = ops.add_report({"summary": "b", "hazards": [], "needs": [_need("Velachery", "water", 150, 5),
+                                                                    _need("Velachery", "food", 60)]})
+    inc = first["incidents"][0]
+    assert [i["id"] for i in again["merged"]] == [inc["id"]] and [i["item"] for i in again["incidents"]] == ["food"]
+    merged = next(i for i in ops.load()["incidents"] if i["id"] == inc["id"])
+    assert (merged["requested"], merged["qty"], merged["urgency"], merged["reports"]) == (150, 150, 5, 2)
+    far = ops.add_report({"summary": "c", "hazards": [], "needs": [_need("Ennore", "water", 50)]})
+    assert far["incidents"] and not far["merged"]  # another place is another need
+    assert [i["id"] for i in ops.track_view(again["track"])["incidents"]] == [again["incidents"][0]["id"], inc["id"]]
+
+
+def test_failed_and_blocked_stops_return_to_queue_and_teach_the_agent(monkeypatch):
+    import ops
+
+    clock = [1_000_000]
+    monkeypatch.setattr(ops, "_now", lambda: clock[0])
+    ops.add_report({"summary": "t", "hazards": [], "needs": [_need("Adyar", "food", 60, 5), _need("Porur", "water", 40, 2),
+                                                            _need("Royapuram", "medicine", 30, 4)]})
+    w = ops.run_wave()
+    stops = [(r, s) for r in w["routes"] for s in r["stops"]]
+    assert len(stops) == 3
+    tok = _tokens()
+    stock_before = {d["id"]: dict(d["stock"]) for d in ops.load()["depots"]}
+    (r1, s1), (r2, s2), (r3, s3) = stops
+    clock[0] += int(s1["eta_raw"] * 60 * 2)  # the first truck arrives at twice the router's estimate
+    a = ops.driver_update(tok[r1["truck_id"]], s1["n"], "delivered", qty=s1["qty"] - 10)
+    b = ops.driver_update(tok[r2["truck_id"]], s2["n"], "blocked", note="bridge under water", coords=(13.03, 80.17))
+    c = ops.driver_update(tok[r3["truck_id"]], s3["n"], "failed", note="camp moved")
+    st = ops.load()
+    incs = {i["id"]: i for i in st["incidents"]}
+    assert incs[s1["incident_id"]]["delivered"] == s1["qty"] - 10 and incs[s1["incident_id"]]["qty"] == 10
+    assert incs[s2["incident_id"]]["status"] == "waiting" and "road blocked" in incs[s2["incident_id"]]["note"]
+    assert incs[s3["incident_id"]]["status"] == "waiting" and "camp moved" in incs[s3["incident_id"]]["note"]
+    h = st["hazards"][-1]
+    assert h["active"] and (h["lat"], h["lng"]) == (13.03, 80.17) and h["source"] == "driver"
+    assert all(t["status"] == "idle" for t in st["trucks"])  # every route closed
+    returned = {d["id"]: {k: d["stock"][k] - stock_before[d["id"]][k] for k in d["stock"]} for d in st["depots"]}
+    assert returned[r1["depot_id"]][s1["item"]] >= 10  # undelivered cargo is back in stock
+    assert a["learned"]["eta_factor"] > 1.0 and a["learned"]["eta_samples"] == 1  # it learned trucks run slow
+    assert b["learned"]["score"] == 0 and c["learned"]["lessons"]
+    mem = agent.load_memory()
+    assert any("blocked" in l for l in mem["lessons"]) and any("failed" in l for l in mem["lessons"])
+    w2 = ops.run_wave()
+    assert w2["routes"][0]["eta_factor"] == mem["eta_factor"]  # new ETAs use the learned correction
+
+
+def test_recall_resources_and_their_guards():
+    import main
+
+    main._hits.clear()
+    c = TestClient(main.app)
+    c.post("/api/reports", data={"text": "90 people need food in Adyar"})
+    w = c.post("/api/ops/wave").json()
+    route = w["routes"][0]
+    assert c.patch(f"/api/ops/trucks/{route['truck_id']}", json={"in_service": False}).status_code == 409
+    rec = c.post(f"/api/ops/routes/{route['id']}/recall").json()
+    assert rec["learned"]["score"] == 0 and rec["summary"]["waiting"] == 1 and rec["summary"]["trucks_out"] == 0
+    assert c.post(f"/api/ops/routes/{route['id']}/recall").status_code == 409
+
+    d = c.post("/api/ops/depots", json={"name": "Velachery School", "lat": 12.98, "lng": 80.22}).json()
+    depot = d["ops"]["depots"][-1]
+    assert depot["id"] == "D4" and sum(depot["stock"].values()) == 0
+    assert c.post("/api/ops/depots", json={"name": "Mumbai", "lat": 19.07, "lng": 72.87}).status_code == 409
+    t = c.post("/api/ops/trucks", json={"depot_id": "D4", "capacity": 600}).json()
+    truck = t["ops"]["trucks"][-1]
+    assert (truck["id"], truck["capacity"], truck["status"]) == ("D4-T1", 600, "idle") and truck["token"]
+    assert c.post("/api/ops/trucks", json={"depot_id": "D4", "capacity": 5}).status_code == 409
+    rs = c.post("/api/ops/restock", json={"depot_id": "D4", "item": "food", "qty": 500, "note": "NGO convoy"}).json()
+    assert rs["ops"]["depots"][-1]["stock"]["food"] == 500 and rs["ops"]["restocks"][-1]["note"] == "NGO convoy"
+    assert c.post("/api/ops/restock", json={"depot_id": "D4", "item": "gold", "qty": 5}).status_code == 409
+    off = c.patch("/api/ops/trucks/D1-T1", json={"in_service": False, "capacity": 300}).json()
+    t1 = next(t for t in off["ops"]["trucks"] if t["id"] == "D1-T1")
+    assert (t1["status"], t1["capacity"]) == ("out_of_service", 300)
+
+    c.post("/api/reports", data={"text": "Road to Saidapet flooded, 30 water needed in Saidapet"})
+    inc = next(i for i in c.get("/api/ops").json()["ops"]["incidents"] if i["zone"] == "Saidapet")
+    closed = c.post(f"/api/ops/incidents/{inc['id']}/close", json={"reason": "resolved by local volunteers"}).json()
+    assert next(i for i in closed["ops"]["incidents"] if i["id"] == inc["id"])["status"] == "closed"
+    main._hits.clear()
+
+
+def test_hazards_are_avoided_by_the_router_and_can_be_cleared(monkeypatch):
+    import ops
+    import roads
+
+    sent = []
+
+    class Resp:
+        status_code = 200
+
+        def __init__(self, body):
+            self.body = body
+
+        def json(self):
+            return self.body
+
+    def post(url, json, timeout):
+        sent.append((url, json))
+        if url.endswith("/sources_to_targets"):
+            n = len(json["sources"])
+            return Resp({"sources_to_targets": [[{"from_index": a, "to_index": b, "distance": 2.0 + a + b}
+                                                 for b in range(n)] for a in range(n)]})
+        legs = [{"summary": {"length": 3.5, "time": 600}, "shape": "_c`|@_c`|@_c`|@_c`|@"}
+                for _ in json["locations"][1:]]
+        return Resp({"trip": {"legs": legs}})
+
+    monkeypatch.delenv("OFFLINE")
+    monkeypatch.setattr(agent, "_gemini_key", lambda: None)
+    monkeypatch.setattr(roads.httpx, "post", post)
+    monkeypatch.setattr(roads, "_cache", type(roads._cache)())
+    ops.add_report({"summary": "t", "needs": [_need("Adyar", "food", 60, 5)],
+                    "hazards": [{"label": "Flooded underpass", "lat": 13.02, "lng": 80.245}]})
+    w = ops.run_wave()
+    r = w["routes"][0]
+    assert w["wave"]["road"] and r["source"] == "road" and r["km"] == 3.5 and r["stops"][0]["eta_raw"] == 10
+    assert r["shape"] == [[1.0, 1.0], [2.0, 2.0]]  # decoded polyline
+    assert all("exclude_polygons" in body for _, body in sent)  # the hazard is an area to avoid
+    h = ops.load()["hazards"][0]
+    ops.clear_hazard(h["id"])
+    assert not ops.load()["hazards"][0]["active"]
+
+    def down(url, json, timeout):
+        raise RuntimeError("connection refused")
+    monkeypatch.setattr(roads.httpx, "post", down)
+    monkeypatch.setattr(roads, "_cache", type(roads._cache)())
+    ops.add_report({"summary": "t", "hazards": [], "needs": [_need("Perambur", "water", 40, 4)]})
+    w = ops.run_wave()
+    assert w["routes"][0]["source"] == "estimate"  # self-healing: plans and routes on estimates
+    assert any("Road router unavailable" in h for h in w["heals"]) and any("Road route for" in h for h in w["heals"])
+
+
+def test_coordinator_sign_in_guards_every_change(monkeypatch):
+    import auth
+    import main
+
+    main._hits.clear()
+    monkeypatch.setenv("COORDINATOR_EMAILS", "lead@example.org")
+    monkeypatch.setenv("FIREBASE_WEB_API_KEY", "web-key")
+    monkeypatch.setenv("FIREBASE_PROJECT_ID", "relief-test")
+    monkeypatch.setattr(auth, "_verified", {})
+    users = {"good": {"email": "lead@example.org", "email_verified": True, "exp": 9e12},
+             "stranger": {"email": "someone@example.org", "email_verified": True, "exp": 9e12}}
+
+    def verify(token):
+        if token not in users:
+            raise ValueError("bad signature")
+        return users[token]
+    monkeypatch.setattr(auth, "_verify", verify)
+    c = TestClient(main.app)
+    good, stranger = {"Authorization": "Bearer good"}, {"Authorization": "Bearer stranger"}
+
+    assert c.get("/api/config").json()["firebase"] == {"apiKey": "web-key", "projectId": "relief-test",
+                                                         "authDomain": "relief-test.firebaseapp.com"}
+    assert c.get("/healthz").json()["coordinator_sign_in"] is True
+    assert c.post("/api/reports", data={"text": "50 food in Adyar"}).status_code == 200  # reporters never sign in
+    for path in ("/api/ops/wave", "/api/ops/reset", "/api/ops/sitrep", "/api/memory/reset"):
+        assert c.post(path).status_code == 401
+        assert c.post(path, headers=stranger).status_code == 401
+        assert c.post(path, headers={"Authorization": "Bearer forged"}).status_code == 401
+    assert c.post("/api/ops/restock", json={"depot_id": "D1", "item": "food", "qty": 5}).status_code == 401
+    assert all("token" not in t for t in c.get("/api/ops").json()["ops"]["trucks"])  # no driver links in public
+    assert all(t["token"] for t in c.get("/api/ops", headers=good).json()["ops"]["trucks"])
+    assert c.get("/api/me", headers=good).json() == {"coordinator": True, "email": "lead@example.org", "sign_in": True}
+    w = c.post("/api/ops/wave", headers=good).json()
+    assert w["wave"]["by"] == "lead@example.org" and w["ops"]["log"][-1]["by"] == "lead@example.org"
     main._hits.clear()
 
 
@@ -256,29 +453,6 @@ def test_sitrep_stock_alerts_are_never_left_to_gemini(monkeypatch):
     rep = ops.sitrep()
     assert rep["generated_by"] == "gemini" and rep["report"]["stock_alerts"] == []  # all depots full: no alerts
     assert "stock" not in ops.SITREP_PROMPT.split("Data:")[0].split("Return")[1]
-
-
-def test_operation_keeps_collapsed_roads_and_restores_from_browser():
-    import ops
-
-    report = {"summary": "test", "needs": [agent._clean_need({"zone": "Ennore", "item": "food", "qty": 90, "urgency": 4}),
-                                           agent._clean_need({"zone": "Porur", "item": "water", "qty": 60, "urgency": 5})],
-              "hazards": []}
-    ops.add_report(report)
-    out = ops.run_wave(chaos=True)
-    assert out["trace"][0]["info"]["new_hazards"]
-    assert any(h["label"].startswith("Bridge collapsed") for h in out["ops"]["hazards"])  # stays for later waves
-    browser_copy = out["ops"]
-    os.remove(ops._path())  # a restarted serverless instance lost /tmp
-    ops.sync(browser_copy)
-    restored = ops.load()
-    assert restored["version"] == browser_copy["version"] and len(restored["incidents"]) == 2
-    ops.sync({"version": 999, "incidents": [{"id": "I1", "item": "gold", "lat": 0, "lng": 0}]})  # junk is filtered
-    assert all(i["item"] in ("food", "water") for i in ops.load()["incidents"])
-    stale = ops.load()
-    ops.reset()  # a coordinator starts a new operation
-    ops.sync({**stale, "version": stale["version"] + 50})  # another browser still holds the old one
-    assert ops.load()["incidents"] == []  # the reset operation is not resurrected
 
 
 def _fake_firestore(monkeypatch, interfere=0):

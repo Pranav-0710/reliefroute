@@ -7,8 +7,10 @@ Same contract as PyTorch OpenEnv environments:
 Runs in-process (no Docker) so the agent can play many episodes fast; it can be
 wrapped as an OpenEnv HTTP server later for RL training.
 """
+import contextvars
 import math
 import random
+from contextlib import contextmanager
 
 CENTER = (13.05, 80.24)  # Chennai
 ITEMS = ["water", "food", "medicine", "blankets"]
@@ -43,12 +45,41 @@ def _xy(lat, lng):
             (lat - CENTER[0]) * 110.57)
 
 
+# Live operations plan on real road distances (roads.py) that already avoid every known hazard.
+# They are installed per request with road_distances(); the simulator and RL training never set them.
+_road = contextvars.ContextVar("road_km", default=None)
+
+
+def _key(p):
+    return round(p[0], 5), round(p[1], 5)
+
+
+@contextmanager
+def road_distances(table):
+    """table: {((lat, lng), (lat, lng)): km} from a road router, or None to use estimates."""
+    token = _road.set({(_key(a), _key(b)): km for (a, b), km in table.items()} if table else None)
+    try:
+        yield
+    finally:
+        _road.reset(token)
+
+
+def _road_km(a, b):
+    table = _road.get()
+    return table.get((_key(a), _key(b))) if table else None
+
+
 def distance_km(a, b):
+    km = _road_km(a, b)
+    if km is not None:
+        return km
     (x1, y1), (x2, y2) = _xy(*a), _xy(*b)
     return math.hypot(x2 - x1, y2 - y1) * 1.3  # road winding factor
 
 
 def _segment_hits(a, b, hazard):
+    if _road_km(a, b) is not None:  # the road route between a and b was computed around every hazard
+        return False
     (ax, ay), (bx, by) = _xy(*a), _xy(*b)
     hx, hy = _xy(hazard["lat"], hazard["lng"])
     dx, dy = bx - ax, by - ay
@@ -67,12 +98,18 @@ class ReliefEnv:
         self._rng = random.Random()
 
     # ---- OpenEnv contract -------------------------------------------------
-    def reset(self, seed=None, extra_needs=None, extra_hazards=None, chaos=True, n_needs=5, random_hazards=True):
+    def reset(self, seed=None, extra_needs=None, extra_hazards=None, chaos=True, n_needs=5, random_hazards=True,
+              depots=None):
+        """depots: optional live depots [{id, name, lat, lng, stock, trucks, capacity: {truck: units}}]."""
         rng = self._rng = random.Random(seed)
-        depots = [{"id": i, "name": n, "lat": la, "lng": lo,
-                   "stock": {it: rng.randint(60, 260) for it in ITEMS},
-                   "trucks": [f"{i}-T{k + 1}" for k in range(TRUCKS_PER_DEPOT)]}
-                  for i, n, la, lo in DEPOTS]
+        if depots is not None:
+            depots = [{"id": d["id"], "name": d["name"], "lat": d["lat"], "lng": d["lng"], "stock": dict(d["stock"]),
+                       "trucks": list(d["trucks"]), "capacity": dict(d.get("capacity") or {})} for d in depots]
+        else:
+            depots = [{"id": i, "name": n, "lat": la, "lng": lo,
+                       "stock": {it: rng.randint(60, 260) for it in ITEMS},
+                       "trucks": [f"{i}-T{k + 1}" for k in range(TRUCKS_PER_DEPOT)], "capacity": {}}
+                      for i, n, la, lo in DEPOTS]
         needs = []
         for k in range(n_needs):
             zone, la, lo = rng.choice(ZONES)
@@ -170,7 +207,7 @@ class ReliefEnv:
                         "km": round(km, 1), "minutes": round(truck["hours"] * 60), "detour": bool(a.get("detour"))}
             s["deliveries"].append(delivery)
             info["delivered"].append(delivery)
-        info["trucks"] = {t: {"stops": v["stops"], "load": TRUCK_CAPACITY - v["cap"], "minutes": round(v["hours"] * 60)}
+        info["trucks"] = {t: {"stops": v["stops"], "load": v["size"] - v["cap"], "minutes": round(v["hours"] * 60)}
                           for t, v in fleet.items() if v["stops"]}
 
         done = not s["pending"] or s["step"] >= MAX_STEPS
@@ -195,7 +232,8 @@ class ReliefEnv:
         return {
             "step": s["step"], "max_steps": MAX_STEPS,
             "depots": [{"id": d["id"], "name": d["name"], "lat": d["lat"], "lng": d["lng"],
-                        "stock": dict(d["stock"]), "trucks": list(d["trucks"])} for d in s["depots"]],
+                        "stock": dict(d["stock"]), "trucks": list(d["trucks"]),
+                        **({"capacity": dict(d["capacity"])} if d.get("capacity") else {})} for d in s["depots"]],
             "truck_capacity": TRUCK_CAPACITY,
             "pending_needs": [dict(n) for n in pend],
             "known_hazards": [dict(h) for h in s["hazards"] if h["known"]],
@@ -206,8 +244,9 @@ class ReliefEnv:
 
     def _new_fleet(self):
         """Trucks start each round empty at their depot."""
-        return {t: {"depot": d["id"], "pos": _pt(d), "cap": TRUCK_CAPACITY, "hours": 0.0, "stops": 0}
-                for d in self._s["depots"] for t in d["trucks"]}
+        return {t: {"depot": d["id"], "pos": _pt(d), "cap": cap, "size": cap, "hours": 0.0, "stops": 0}
+                for d in self._s["depots"] for t in d["trucks"]
+                for cap in [d.get("capacity", {}).get(t, TRUCK_CAPACITY)]}
 
     @staticmethod
     def _pick_truck(fleet, a):

@@ -110,12 +110,48 @@
   .polhead { color:var(--faint); font-size:11px; border-bottom:1px solid var(--line); }
   ol.lessons { margin:0; padding-left:20px; font-size:13px; }
   ol.lessons li { margin:6px 0; } ol.lessons li::marker { font-family:var(--mono); color:var(--faint); }
+
+  /* live operations */
+  #who a, .link { color:var(--text); background:none; border:0; padding:0; font:inherit; text-decoration:underline; text-underline-offset:2px; cursor:pointer; }
+  .link.small { font-size:12px; color:var(--muted); }
+  body.readonly [data-coord] { opacity:.4; pointer-events:none; }
+  .coordhint { display:none; font-size:12.5px; color:var(--amber); margin:8px 0 0; }
+  body.readonly .coordhint { display:block; }
+  .inc.en_route { border-color:var(--blue); } .inc.closed { border-color:var(--faint); opacity:.55; }
+  .inc .top { display:flex; justify-content:space-between; gap:8px; align-items:baseline; }
+  .badge { font:500 10.5px var(--mono); color:var(--muted); border:1px solid var(--line-2); border-radius:3px; padding:0 4px; margin-left:4px; }
+  .rowlist > div { display:flex; justify-content:space-between; gap:10px; align-items:baseline; padding:7px 0; border-bottom:1px solid var(--line); font-size:13px; }
+  .rowlist > div:last-child { border-bottom:0; }
+  .rowlist .sub { color:var(--muted); font-size:12px; }
+  .rowlist .acts { display:flex; gap:10px; flex-wrap:wrap; justify-content:flex-end; }
+  .st { font:500 10.5px var(--mono); letter-spacing:.05em; text-transform:uppercase; }
+  .st.idle { color:var(--green); } .st.on_route { color:var(--blue); } .st.out_of_service { color:var(--faint); }
+  table.stock { width:100%; border-collapse:collapse; font-size:12.5px; }
+  table.stock th { font:500 10.5px var(--mono); color:var(--faint); text-align:right; padding:4px 0 4px 6px; border-bottom:1px solid var(--line); }
+  table.stock th:first-child, table.stock td:first-child { text-align:left; padding-left:0; }
+  table.stock td { padding:5px 0 5px 6px; border-bottom:1px solid var(--line); text-align:right; font-family:var(--mono); }
+  table.stock td:first-child { font-family:var(--sans); }
+  table.stock td.low { color:var(--amber); }
+  .mini { display:grid; grid-template-columns:repeat(auto-fit, minmax(80px, 1fr)); gap:6px; margin-top:10px; }
+  .mini input, .mini select { width:100%; min-width:0; background:var(--panel); border:1px solid var(--line); border-radius:5px; padding:5px 7px; font-size:12.5px; }
+  .mini .btn { justify-content:center; }
+  details.more { margin-top:10px; font-size:12.5px; }
+  details.more summary { cursor:pointer; color:var(--muted); }
+  .figs { display:grid; grid-template-columns:1fr 1fr; gap:1px; background:var(--line); border:1px solid var(--line); border-radius:6px; overflow:hidden; margin-bottom:10px; }
+  .figs div { background:var(--bg); padding:8px 10px; }
+  .figs b { display:block; font:500 18px/1.2 var(--mono); }
+  .figs span { font-size:11.5px; color:var(--muted); }
+  .activity { font-size:12.5px; max-height:220px; overflow:auto; }
+  .activity div { padding:4px 0; border-bottom:1px solid var(--line); }
+  .activity time { font-family:var(--mono); color:var(--faint); margin-right:6px; }
+  .map.picking svg { cursor:crosshair; }
 </style>
 </head>
 <body>
 <header>
   <div class="brand"><b>ReliefRoute</b><span>Flood-relief dispatch agent · Chennai</span></div>
   <div class="status">
+    <span id="who"></span>
     <span id="ai"><span class="dot"></span>Gemini · checking</span>
     <span title="MCP Streamable HTTP endpoint exposing the agent's tools"><span class="dot ok"></span>MCP /mcp</span>
   </div>
@@ -155,19 +191,20 @@
       <h2>Incident queue</h2>
       <div class="opsfig" id="opsfig"></div>
       <div id="queueList"><div class="hint">No incidents yet. Add a report above or send one from /report.</div></div>
-      <label class="check"><input type="checkbox" id="opsChaos"><span>Simulate a road collapse in the next wave</span></label>
-      <button class="btn primary" id="wave">Dispatch wave</button>
+      <button class="btn primary" id="wave" data-coord style="margin-top:12px">Dispatch wave</button>
+      <p class="hint" style="margin-top:8px">Plans every waiting incident onto the free trucks with real road routes. Each driver gets the route on their phone.</p>
       <div class="row">
-        <button class="btn" id="sitrep">Situation report</button>
-        <button class="btn" id="opsReset">New operation</button>
+        <button class="btn" id="sitrep" data-coord>Situation report</button>
+        <button class="btn" id="opsReset" data-coord>New operation</button>
       </div>
+      <p class="coordhint">Read-only view. Sign in as a coordinator (top right) to dispatch and manage resources.</p>
     </div>
     <div class="block" data-show="sim">
       <h2>Training</h2>
       <p class="hint">Plays simulated flood scenarios in the OpenEnv environment. Every run is scored; the bandit and the lesson memory update. <span class="num">rl_policy</span> is a neural policy trained offline with reinforcement learning (PyTorch).</p>
       <div class="row">
         <button class="btn" id="train">Run 5 episodes</button>
-        <button class="btn" id="reset">Reset memory</button>
+        <button class="btn" id="reset" data-coord>Reset memory</button>
       </div>
     </div>
   </section>
@@ -182,12 +219,16 @@
       <h2>Operations map</h2>
       <div class="legend">
         <span><svg width="10" height="10"><rect width="10" height="10" fill="#e7e5e2"/></svg>Depot</span>
-        <span><svg width="10" height="10"><circle cx="5" cy="5" r="4" fill="#7a9cc6"/></svg>Open request</span>
-        <span><svg width="10" height="10"><circle cx="5" cy="5" r="4" fill="#e3a33b"/></svg>Field report</span>
-        <span><svg width="18" height="6"><line x1="0" y1="3" x2="18" y2="3" stroke="#5fb37f" stroke-width="2"/></svg>Truck leg</span>
-        <span><svg width="18" height="6"><line x1="0" y1="3" x2="18" y2="3" stroke="#5fb37f" stroke-width="2" stroke-dasharray="5 3"/></svg>Detour</span>
-        <span><svg width="18" height="6"><line x1="0" y1="3" x2="18" y2="3" stroke="#e0574f" stroke-width="2" stroke-dasharray="2 3"/></svg>Blocked</span>
-        <span><svg width="10" height="10"><circle cx="5" cy="5" r="4.5" fill="#e0574f33" stroke="#e0574f"/></svg>Flooded</span>
+        <span data-show="sim"><svg width="10" height="10"><circle cx="5" cy="5" r="4" fill="#7a9cc6"/></svg>Open request</span>
+        <span data-show="sim"><svg width="10" height="10"><circle cx="5" cy="5" r="4" fill="#e3a33b"/></svg>Field report</span>
+        <span data-show="sim"><svg width="18" height="6"><line x1="0" y1="3" x2="18" y2="3" stroke="#5fb37f" stroke-width="2"/></svg>Truck leg</span>
+        <span data-show="sim"><svg width="18" height="6"><line x1="0" y1="3" x2="18" y2="3" stroke="#5fb37f" stroke-width="2" stroke-dasharray="5 3"/></svg>Detour</span>
+        <span data-show="sim"><svg width="18" height="6"><line x1="0" y1="3" x2="18" y2="3" stroke="#e0574f" stroke-width="2" stroke-dasharray="2 3"/></svg>Blocked</span>
+        <span data-show="ops"><svg width="10" height="10"><circle cx="5" cy="5" r="4" fill="#e3a33b"/></svg>Waiting</span>
+        <span data-show="ops"><svg width="10" height="10"><circle cx="5" cy="5" r="4" fill="#7a9cc6"/></svg>On a truck</span>
+        <span data-show="ops"><svg width="10" height="10"><circle cx="5" cy="5" r="3" fill="#5fb37f"/></svg>Delivered</span>
+        <span data-show="ops"><svg width="18" height="6"><line x1="0" y1="3" x2="18" y2="3" stroke="#5fb37f" stroke-width="2.5"/></svg>Road route</span>
+        <span><svg width="10" height="10"><circle cx="5" cy="5" r="4.5" fill="#e0574f33" stroke="#e0574f"/></svg>Flooded / blocked</span>
       </div>
     </div>
     <div class="map"><svg id="map" viewBox="0 0 600 560" role="img" aria-label="Map of Chennai with depots, requests and routes"></svg></div>
@@ -196,7 +237,47 @@
   </section>
 
   <section>
-    <div class="block">
+    <div class="block" data-show="ops">
+      <h2>Fleet</h2>
+      <div class="rowlist" id="fleet"></div>
+      <details class="more" data-coord><summary>Add a truck</summary>
+        <div class="mini"><select id="truckDepot" aria-label="Depot"></select>
+          <input id="truckCap" type="number" min="20" max="2000" value="250" aria-label="Capacity in units">
+          <button class="btn" id="addTruck">Add</button></div>
+      </details>
+    </div>
+    <div class="block" data-show="ops">
+      <h2>Depots and stock</h2>
+      <table class="stock" id="stock"></table>
+      <details class="more" data-coord><summary>Log incoming supplies</summary>
+        <div class="mini"><select id="rsDepot" aria-label="Depot"></select>
+          <select id="rsItem" aria-label="Item"><option>water</option><option>food</option><option>medicine</option><option>blankets</option></select>
+          <input id="rsQty" type="number" min="1" value="200" aria-label="Quantity">
+          <input id="rsNote" placeholder="from (optional)" aria-label="Source of the supplies">
+          <button class="btn" id="restock">Add stock</button></div>
+      </details>
+      <details class="more" data-coord><summary>Open a new depot</summary>
+        <div class="mini"><input id="depName" placeholder="Name" aria-label="Depot name">
+          <button class="btn" id="pick">Pick on map</button>
+          <button class="btn" id="addDepot" disabled>Open depot</button></div>
+        <p class="hint" id="pickHint" style="margin-top:6px">Choose “Pick on map”, then click where the depot is.</p>
+      </details>
+    </div>
+    <div class="block" data-show="ops">
+      <h2>Road hazards</h2>
+      <div class="rowlist" id="hazards"></div>
+    </div>
+    <div class="block" data-show="ops">
+      <h2>Learning from the field</h2>
+      <div class="figs" id="fieldFigs"></div>
+      <div class="rowlist" id="fieldStrat"></div>
+      <p class="hint" style="margin-top:6px">Every closed route is scored on what drivers actually delivered. Arrival times correct future ETAs; failed and blocked stops become lessons.</p>
+    </div>
+    <div class="block" data-show="ops">
+      <h2>Activity</h2>
+      <div class="activity" id="activity"></div>
+    </div>
+    <div class="block" data-show="sim">
       <h2>Performance</h2>
       <div class="kpis">
         <div class="kpi"><b id="k-last">–</b><span>Last score</span></div>
@@ -207,7 +288,7 @@
       <div class="chart"><svg id="chart" viewBox="0 0 320 150" role="img" aria-label="Score per episode"></svg></div>
       <p class="hint" style="margin-top:6px">Score = share of the best possible outcome. Dots: each episode. Line: 5-episode average.</p>
     </div>
-    <div class="block">
+    <div class="block" data-show="sim">
       <h2>Policy · bandit</h2>
       <div id="bandit"></div>
       <p class="hint" style="margin-top:8px">Mostly uses the best-scoring strategy, tries the others 20% of the time.</p>
@@ -310,6 +391,7 @@ function drawMap(res) {
 // ---- event log -------------------------------------------------------------------
 function ev(tag, cls, html) {
   const d = document.createElement("div");
+  $("log").querySelector(".empty")?.remove();
   d.className = "ev"; d.innerHTML = `<span class="tag ${cls}">${tag}</span><div>${html}</div>`;
   $("log").appendChild(d);
 }
@@ -485,64 +567,230 @@ $("rec").onclick = async () => {
   } catch { $("attached").textContent = "Microphone unavailable"; }
 };
 
-async function api(path, opts) {
-  const r = await fetch(path, opts);
+// ---- coordinator sign-in (Firebase Authentication, Google accounts) ---------------------------------
+let fbAuth = null, me = { coordinator: true, signIn: false };
+
+async function authHeaders() {
+  const u = fbAuth && fbAuth.currentUser;
+  return u ? { Authorization: `Bearer ${await u.getIdToken()}` } : {};
+}
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, { ...opts, headers: { ...(opts.headers || {}), ...(await authHeaders()) } });
   if (!r.ok) {
     let msg = await r.text();
     try { msg = JSON.parse(msg).detail || msg; } catch {}
-    throw new Error(r.status === 429 ? msg : `${r.status} ${msg}`);
+    throw new Error([401, 409, 429].includes(r.status) ? msg : `${r.status} ${msg}`);
   }
   return r.json();
 }
+const postJSON = (path, body, method = "POST") =>
+  api(path, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+
+function loadScript(src) {
+  return new Promise((ok, bad) => { const s = document.createElement("script"); s.src = src; s.onload = ok; s.onerror = bad; document.head.appendChild(s); });
+}
+
+function renderWho() {
+  const el = $("who"), u = fbAuth && fbAuth.currentUser;
+  document.body.classList.toggle("readonly", !me.coordinator);
+  if (!me.signIn) {
+    el.innerHTML = `<span class="dot warn"></span>Open console · sign-in off`;
+    el.title = "Anyone with this link can dispatch. Configure coordinator sign-in to restrict it.";
+  } else if (u) {
+    el.innerHTML = `<span class="dot ${me.coordinator ? "ok" : "bad"}"></span>${esc(u.email)}${me.coordinator ? "" : " · not a coordinator"} · <a href="#" id="signOut">sign out</a>`;
+    $("signOut").onclick = e => { e.preventDefault(); fbAuth.signOut(); };
+  } else {
+    el.innerHTML = `<a href="#" id="signIn">Coordinator sign-in</a>`;
+    $("signIn").onclick = e => {
+      e.preventDefault();
+      fbAuth.signInWithPopup(new firebase.auth.GoogleAuthProvider()).catch(err => ev("ERROR", "bad", esc(err.message)));
+    };
+  }
+  if (ops) renderOps(ops, opsSummary);
+}
+
+async function initAuth() {
+  let cfg = null;
+  try { cfg = (await api("/api/config")).firebase; } catch {}
+  if (!cfg) { me = { coordinator: true, signIn: false }; renderWho(); return; }
+  me = { coordinator: false, signIn: true }; renderWho();
+  try {
+    await loadScript("https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js");
+    await loadScript("https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js");
+  } catch { $("who").textContent = "Sign-in unavailable (Firebase did not load)"; return; }
+  firebase.initializeApp(cfg);
+  fbAuth = firebase.auth();
+  fbAuth.onAuthStateChanged(async u => {
+    me.coordinator = false;
+    if (u) { try { me.coordinator = (await api("/api/me")).coordinator; } catch {} }
+    renderWho(); refreshOps();
+  });
+}
 
 // ---- live operations ------------------------------------------------------------------------------
-const OPS_KEY = "reliefroute-ops";
-let ops = null, opsDepots = null, opsBusy = false, opsSeen = null, opsLastWave = null;
-try { ops = JSON.parse(localStorage.getItem(OPS_KEY)); } catch { ops = null; }
+const ITEMS = ["water", "food", "medicine", "blankets"];
+let ops = null, opsSummary = null, opsBusy = false, opsSeen = null, stopSeen = null, routeSeen = null, picking = false, picked = null;
 const mins = ts => Math.max(0, Math.round((Date.now() / 1000 - ts) / 60));
-const postJSON = (path, body) => api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+const hhmm = ts => new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
 function setMode(m) {
   document.body.dataset.mode = m;
   document.querySelectorAll(".mode").forEach(b => { b.classList.toggle("on", b.dataset.mode === m); b.setAttribute("aria-selected", b.dataset.mode === m); });
   try { localStorage.setItem("reliefroute-mode", m); } catch {}
-  if (m === "ops") refreshOps(); else api("/api/scenario").then(drawMap).catch(() => {});
+  if (m === "ops") { if (ops) drawOpsMap(); refreshOps(); } else api("/api/scenario").then(drawMap).catch(() => {});
 }
 document.querySelectorAll(".mode").forEach(b => b.onclick = () => setMode(b.dataset.mode));
 
+function incLine(i) {
+  const status = i.status === "waiting" ? `waiting ${mins(i.reported_at)} min${i.assigned ? ` · ${i.assigned} on a truck` : ""}`
+    : i.status === "en_route" ? `${i.assigned} on a truck` : i.status === "delivered" ? `delivered ${i.delivered}` : "closed";
+  const amount = i.status === "waiting" && i.qty !== i.requested ? `${i.qty} of ${i.requested}` : i.requested;
+  const canClose = me.coordinator && i.status === "waiting" && !i.assigned;
+  return `<div class="inc ${i.status}"><div class="top"><div><span class="id">${esc(i.id)}</span><b>${esc(i.zone)}</b> · ${amount} ${esc(i.item)} · U${i.urgency}` +
+    `${i.reports > 1 ? `<span class="badge">${i.reports} reports</span>` : ""}</div>` +
+    (canClose ? `<button class="link small" data-close="${esc(i.id)}">close</button>` : "") + `</div>` +
+    `<div class="meta">${status} · ${esc(i.source)}${i.located_by === "gps" ? " (GPS)" : ""}${i.note ? " · " + esc(i.note) : ""}</div></div>`;
+}
+
 function renderOps(st, s) {
-  ops = st;
-  try { localStorage.setItem(OPS_KEY, JSON.stringify(st)); } catch {}
-  $("opsfig").innerHTML = `<b>${s.waiting}</b> waiting · <b>${s.delivered}</b> delivered · <b>${s.units_delivered}</b> units · longest wait <b>${s.longest_wait_min}</b> min`;
-  const rank = i => (i.status === "waiting" ? 0 : 1);
-  const list = [...st.incidents].sort((a, b) => rank(a) - rank(b) || (rank(a) ? b.reported_at - a.reported_at : b.urgency - a.urgency || a.reported_at - b.reported_at));
-  $("queueList").innerHTML = list.length ? list.slice(0, 60).map(i =>
-    `<div class="inc ${i.status}"><div><span class="id">${esc(i.id)}</span><b>${esc(i.zone)}</b> · ${i.status === "waiting" && i.qty !== i.requested ? `${i.qty} of ` : ""}${i.requested} ${esc(i.item)} · U${i.urgency}</div>` +
-    `<div class="meta">${i.status === "waiting" ? `waiting ${mins(i.reported_at)} min` : "delivered"} · ${esc(i.source)}${i.located_by === "gps" ? " (GPS)" : ""}${i.note ? " · " + esc(i.note) : ""}</div></div>`).join("")
+  ops = st; opsSummary = s;
+  $("opsfig").innerHTML = `<b>${s.waiting}</b> waiting · <b>${s.en_route}</b> on trucks · <b>${s.units_delivered}</b> units delivered · ` +
+    `trucks <b>${s.trucks_out}</b> out, <b>${s.trucks_free}</b> free · longest wait <b>${s.longest_wait_min}</b> min`;
+  const rank = { waiting: 0, en_route: 1, delivered: 2, closed: 3 };
+  const list = [...st.incidents].sort((a, b) => rank[a.status] - rank[b.status] ||
+    (rank[a.status] ? b.reported_at - a.reported_at : b.urgency - a.urgency || a.reported_at - b.reported_at));
+  $("queueList").innerHTML = list.length ? list.slice(0, 80).map(incLine).join("")
     : '<div class="hint">No incidents yet. Add a report above or send one from /report.</div>';
+  renderFleet(st); renderStock(st); renderHazards(st); renderActivity(st);
   if (document.body.dataset.mode === "ops" && !opsBusy) drawOpsMap();
 }
 
-function drawOpsMap(wave = opsLastWave) {  // keep the last wave's routes on screen across polling refreshes
-  if (!ops || !opsDepots) return;
-  const depots = opsDepots.map(d => ({ ...d, stock: ops.stock[d.id] || d.stock }));
-  const inWave = new Set(wave ? wave.trace[0].action.map(a => a.need_id) : []);
-  const needs = ops.incidents.filter(i => i.status === "waiting" || inWave.has(i.id))
-    .map(i => ({ id: i.id, zone: i.zone, lat: i.lat, lng: i.lng, item: i.item, requested: i.requested, urgency: i.urgency, source: "field" }));
-  drawMap({ initial: { depots, needs }, hazards: ops.hazards, trace: wave ? wave.trace : [], deliveries: wave ? wave.deliveries : [], unmet: [] });
+function renderFleet(st) {
+  const routes = Object.fromEntries(st.routes.map(r => [r.id, r]));
+  $("fleet").innerHTML = st.trucks.map(t => {
+    const r = t.route_id && routes[t.route_id];
+    const done = r ? r.stops.filter(x => x.status !== "pending").length : 0;
+    const next = r && r.stops.find(x => x.status === "pending");
+    const info = r ? `${esc(r.id)} · ${done}/${r.stops.length} stops${next ? ` · next ${esc(next.zone)} ~${hhmm(r.created_at + next.eta_min * 60)}` : ""}`
+      : `${t.capacity} units · ${esc(t.depot_id)}`;
+    const link = t.token ? `${location.origin}/driver/${t.token}` : "";
+    const acts = [];
+    if (link) acts.push(`<button class="link small" data-copy="${esc(link)}">copy driver link</button>`,
+      `<a class="link small" href="${esc(link)}" target="_blank" rel="noopener">open</a>`);
+    if (me.coordinator && r) acts.push(`<button class="link small" data-recall="${esc(r.id)}">recall</button>`);
+    if (me.coordinator && !r) acts.push(`<button class="link small" data-service="${esc(t.id)}" data-on="${t.status === "out_of_service" ? 1 : 0}">${t.status === "out_of_service" ? "back in service" : "out of service"}</button>`);
+    return `<div><div><span class="num">${esc(t.id)}</span> <span class="st ${t.status}">${t.status.replace(/_/g, " ")}</span>` +
+      `<div class="sub">${info}</div></div><div class="acts">${acts.join("")}</div></div>`;
+  }).join("") || '<div class="hint">No trucks.</div>';
+  const opts = st.depots.map(d => `<option value="${esc(d.id)}">${esc(d.id)} ${esc(d.name)}</option>`).join("");
+  for (const id of ["truckDepot", "rsDepot"]) { const v = $(id).value; $(id).innerHTML = opts; if (v) $(id).value = v; }
+}
+
+function renderStock(st) {
+  $("stock").innerHTML = `<tr><th>Depot</th>${ITEMS.map(i => `<th>${i}</th>`).join("")}</tr>` +
+    st.depots.map(d => `<tr><td>${esc(d.name)} <span class="hint">${esc(d.id)}</span></td>` +
+      ITEMS.map(i => `<td class="${(d.stock[i] || 0) < 100 ? "low" : ""}">${d.stock[i] || 0}</td>`).join("") + `</tr>`).join("");
+}
+
+function renderHazards(st) {
+  const active = st.hazards.filter(h => h.active);
+  $("hazards").innerHTML = active.map(h => `<div><div>${esc(h.label)}<div class="sub">${esc(h.id)} · ${esc(h.source)} · ${hhmm(h.reported_at)}</div></div>` +
+    (me.coordinator ? `<div class="acts"><button class="link small" data-clear="${esc(h.id)}">road reopened</button></div>` : "") + `</div>`).join("")
+    || '<div class="hint">No active hazards.</div>';
+}
+
+function renderActivity(st) {
+  $("activity").innerHTML = [...st.log].reverse().slice(0, 40)
+    .map(l => `<div><time>${hhmm(l.at)}</time>${esc(l.text)} <span class="hint">· ${esc(l.by)}</span></div>`).join("") || '<div class="hint">Nothing yet.</div>';
+}
+
+function renderField(mem) {
+  const f = mem.field || { strategies: {}, routes: [] };
+  const n = f.routes.length, avg = n ? mean(f.routes.map(r => r.score)) : null;
+  $("fieldFigs").innerHTML = `<div><b>${n}</b><span>routes closed</span></div>` +
+    `<div><b>${avg === null ? "–" : avg.toFixed(0) + "%"}</b><span>loaded relief delivered</span></div>` +
+    `<div><b>×${(mem.eta_factor ?? 1).toFixed(2)}</b><span>learned ETA correction</span></div>` +
+    `<div><b>${mem.lessons.filter(l => l.startsWith("Field:")).length}</b><span>field lessons</span></div>`;
+  $("fieldStrat").innerHTML = Object.entries(f.strategies).map(([k, v]) =>
+    `<div><span class="num">${esc(k)}</span><span class="sub">${v.n} route${v.n === 1 ? "" : "s"} · ${v.mean.toFixed(0)}% delivered</span></div>`).join("");
+}
+
+function refreshMemory() {
+  return api("/api/memory").then(m => {
+    renderMemory(localMem && localMem.episodes && localMem.episodes.length > m.episodes.length ? localMem : m);
+    renderField(m);
+  }).catch(() => {});
+}
+
+function drawOpsMap() {
+  if (!ops) return;
+  const at = o => px(o.lat, o.lng);
+  let s = baseMap();
+  for (const h of ops.hazards.filter(h => h.active)) {
+    const [x, y] = at(h);
+    s += `<circle cx="${x}" cy="${y}" r="${Math.max(4, h.radius_km * PX_PER_KM)}" fill="${C.red}26" stroke="${C.red}" stroke-width="1"><title>${esc(h.label)}</title></circle>`;
+    s += label(x + 8, y - 8, esc(h.label.length > 34 ? h.label.slice(0, 33) + "…" : h.label), C.red, 10);
+  }
+  for (const r of ops.routes.filter(r => r.status === "active")) {
+    if (r.shape.length > 1) {
+      s += `<polyline points="${pts(r.shape)}" fill="none" stroke="${C.green}" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round" ${r.source === "estimate" ? 'stroke-dasharray="7 5"' : ""}><title>${esc(r.id)} ${esc(r.truck_id)}: ${r.km} km, ${r.source === "road" ? "road route" : "estimate"}</title></polyline>`;
+      const [mx, my] = at({ lat: r.shape[Math.floor(r.shape.length / 2)][0], lng: r.shape[Math.floor(r.shape.length / 2)][1] });
+      s += label(mx + 6, my - 6, esc(r.truck_id), C.green, 10, 'font-family="IBM Plex Mono, monospace"');
+    }
+    for (const st of r.stops) {
+      const [x, y] = at(st), col = st.status === "pending" || st.status === "delivered" ? C.green : C.red;
+      s += `<circle cx="${x}" cy="${y}" r="7.5" fill="${st.status === "pending" ? C.map : col}" stroke="${col}" stroke-width="1.5"/>` +
+        `<text x="${x}" y="${y + 3.5}" text-anchor="middle" font-size="9.5" font-family="IBM Plex Mono, monospace" fill="${st.status === "pending" ? col : C.map}">${st.n}</text>`;
+    }
+  }
+  for (const i of ops.incidents) {
+    if (i.status === "closed") continue;
+    const [x, y] = at(i), col = i.status === "waiting" ? C.amber : i.status === "en_route" ? C.blue : C.green;
+    const done = i.status === "delivered";
+    s += `<circle cx="${x}" cy="${y}" r="${done ? 3 : 3.5 + i.urgency * 1.1}" fill="${col}" ${done ? 'opacity=".55"' : ""}><title>${esc(i.id)} ${esc(i.zone)}: ${i.requested} ${esc(i.item)}, ${esc(i.status.replace("_", " "))}</title></circle>`;
+    if (!done) s += label(x + 9, y + 4, `${esc(i.id)} ${esc(i.zone)} · ${i.qty || i.assigned} ${esc(i.item)}`, i.status === "waiting" ? C.amber : "#b9c2cc", 10);
+  }
+  for (const d of ops.depots) {
+    const [x, y] = at(d);
+    s += `<rect x="${x - 6}" y="${y - 6}" width="12" height="12" fill="${C.text}"><title>${esc(d.name)}: ${ITEMS.map(k => `${k} ${d.stock[k] || 0}`).join(", ")}</title></rect>`;
+    s += label(x + 10, y - 7, `${esc(d.id)} ${esc(d.name)}`, C.text, 11, 'font-weight="600"');
+  }
+  if (picked) {
+    const [x, y] = at(picked);
+    s += `<path d="M${x - 8} ${y} H${x + 8} M${x} ${y - 8} V${y + 8}" stroke="${C.text}" stroke-width="2"/>` + label(x + 10, y + 14, "new depot", C.text, 10);
+  }
+  $("map").innerHTML = s;
+}
+
+// what happened elsewhere (phones, drivers) since the last refresh, for the event log
+function noteChanges(st) {
+  const fresh = opsSeen ? st.incidents.filter(i => !opsSeen.has(i.id)) : [];
+  opsSeen = new Set(st.incidents.map(i => i.id));
+  for (const i of fresh.filter(i => i.source === "phone"))
+    ev("PHONE", "intake", `${esc(i.id)} ${esc(i.zone)} · ${i.qty} ${esc(i.item)} · urgency ${i.urgency}${i.located_by === "gps" ? " · placed by GPS" : ""}<div class="sub">${esc(i.summary)}</div>`);
+  const stops = new Map(st.routes.flatMap(r => r.stops.map(s => [`${r.id}#${s.n}`, [r, s]])));
+  if (stopSeen) for (const [k, [r, s]] of stops) {
+    if (stopSeen.get(k) !== "pending" || s.status === "pending") continue;
+    if (s.status === "delivered") ev("DRIVER", "good", `${esc(r.truck_id)} stop ${s.n} ${esc(s.zone)}: delivered ${s.delivered_qty} of ${s.qty} ${esc(s.item)}`);
+    else if (s.status === "blocked") {
+      ev("BLOCKED", "alert", `${esc(r.truck_id)} stop ${s.n} ${esc(s.zone)}: road blocked${s.note ? " · " + esc(s.note) : ""}`);
+      ev("REROUTE", "heal", "The blocked road is now a hazard and the stop is back in the queue; the next wave routes around it.");
+    } else ev("DRIVER", "bad", `${esc(r.truck_id)} stop ${s.n} ${esc(s.zone)}: ${s.status === "failed" ? "could not deliver" : "not reached"}${s.note ? " · " + esc(s.note) : ""}`);
+  }
+  if (routeSeen) for (const r of st.routes) if (r.status === "done" && routeSeen.get(r.id) === "active") {
+    const ok = r.stops.filter(s => s.status === "delivered").length;
+    ev("LEARN", "lesson", `${esc(r.id)} closed with ${ok}/${r.stops.length} stops delivered. The outcome is scored and arrival times update the ETA correction.`);
+    setTimeout(refreshMemory, 300);
+  }
+  stopSeen = new Map([...stops].map(([k, [, s]]) => [k, s.status]));
+  routeSeen = new Map(st.routes.map(r => [r.id, r.status]));
 }
 
 async function refreshOps() {
   try {
     const r = await api("/api/ops");
-    if (ops && ops.version > r.ops.version) {  // server restarted and lost the operation: restore this browser's copy
-      const s = await postJSON("/api/ops/sync", { ops });
-      return renderOps(s.ops, s.summary);
-    }
-    const fresh = opsSeen ? r.ops.incidents.filter(i => !opsSeen.has(i.id)) : [];
-    opsSeen = new Set(r.ops.incidents.map(i => i.id));
-    for (const i of fresh.filter(i => i.source === "phone"))
-      ev("PHONE", "intake", `${esc(i.id)} ${esc(i.zone)} · ${i.qty} ${esc(i.item)} · urgency ${i.urgency}${i.located_by === "gps" ? " · placed by GPS" : ""}<div class="sub">${esc(i.summary)}</div>`);
+    noteChanges(r.ops);
     renderOps(r.ops, r.summary);
   } catch {}
 }
@@ -565,36 +813,36 @@ $("queue").onclick = async () => {
     $("log").innerHTML = "";
     ev("INTAKE", "intake", `${esc(r.intake.summary)} <span class="sub">· ${esc(r.intake.language)}</span>` +
       (r.intake.hazards.length ? `<div class="sub">Hazards: ${r.intake.hazards.map(h => esc(h.label)).join(", ")}</div>` : ""));
-    ev("QUEUED", "good", r.incidents.map(i => `<div class="num">${esc(i.id)} ${esc(i.zone)} · ${i.qty} ${esc(i.item)} · urgency ${i.urgency}</div>`).join("") || "No supplies recognised in this report.");
+    if (r.incidents.length || !r.merged.length)
+      ev("QUEUED", "good", r.incidents.map(i => `<div class="num">${esc(i.id)} ${esc(i.zone)} · ${i.qty} ${esc(i.item)} · urgency ${i.urgency}</div>`).join("") || "No supplies recognised in this report.");
+    for (const i of r.merged)
+      ev("MERGED", "heal", `${esc(i.id)} ${esc(i.zone)} ${esc(i.item)} was already reported: now ${i.reports} reports for ${i.requested} units, one request, no second truck.`);
+    ev("TRACKING", "", `Reporter's status link: <a class="num" style="color:var(--text)" href="${esc(r.track_url)}" target="_blank">${esc(r.track_url.slice(0, 18))}…</a>`);
     for (const h of r.heals) { const [tag, cls] = healTag(h); ev(tag, cls, esc(h)); }
-    if (opsSeen) r.incidents.forEach(i => opsSeen.add(i.id));
-    renderOps(r.ops, r.summary); updateAI(r.heals);
+    noteChanges(r.ops); renderOps(r.ops, r.summary); updateAI(r.heals);
     $("image").value = ""; $("audio").value = ""; recBlob = null; showAttached();
     $("pipe").classList.remove("busy"); [...$("pipe").children].forEach((s, k) => s.classList.toggle("on", k === 0));
   } catch (e) { $("pipe").classList.remove("busy"); $("log").innerHTML = ""; ev("ERROR", "bad", esc(e.message)); }
   finally { $("queue").disabled = false; $("queue").textContent = "Add to incident queue"; }
 };
 
-function legLines(info) {
-  return info.delivered.map(d => `<div class="sub num">${d.need_id} ← ${d.truck_id} #${d.stop}  ${d.qty} ${d.item}  ${d.km} km  arrives ${d.minutes} min${d.detour ? "  detour" : ""}</div>`).join("") +
-    info.blocked.map(b => `<div class="num" style="color:var(--red)">${b.need_id} ← ${b.truck_id || b.depot_id}  blocked by ${b.hazards.join(", ")}</div>`).join("") +
-    (info.no_truck || []).map(b => `<div class="num" style="color:var(--amber)">${b.need_id} ← ${b.depot_id}  no truck capacity left this wave</div>`).join("");
-}
-
 $("wave").onclick = async () => {
-  opsBusy = true; $("wave").disabled = true; $("wave").textContent = "Planning wave…"; pipeBusy();
+  opsBusy = true; $("wave").disabled = true; $("wave").textContent = "Planning routes…"; pipeBusy();
   try {
-    const r = await postJSON("/api/ops/wave", { chaos: $("opsChaos").checked, ops });
-    const w = r.wave, t = r.trace[0];
+    const r = await api("/api/ops/wave", { method: "POST" });
+    const w = r.wave;
     opsBusy = false;
-    opsLastWave = r;
-    renderOps(r.ops, r.summary); drawOpsMap(r);
+    noteChanges(r.ops); renderOps(r.ops, r.summary);
     $("log").innerHTML = "";
-    ev(`WAVE ${w.n}`, w.blocked ? "bad" : "good", `<span class="sub">${esc(w.strategy)}</span> · ${esc(t.reasoning)}${legLines(t.info)}`);
-    for (const h of r.heals) { const [tag, cls] = healTag(h); ev(tag, cls, esc(h.replace(/^ALERT\s*/, ""))); }
-    ev("STATUS", r.unmet.length ? "bad" : "good", `${w.delivered} deliveries · ${w.units} units this wave · ${r.unmet.length} incident(s) still waiting`);
+    ev(`WAVE ${w.n}`, "good", `<span class="sub">${esc(w.strategy)}</span> · ${esc(r.reasoning)}` +
+      r.routes.map(rt => `<div class="sub num">${esc(rt.id)} ${esc(rt.truck_id)}: ${rt.stops.map(s => `${esc(s.zone)} ${s.qty} ${esc(s.item)} ~${s.eta_min} min`).join(" → ")} · ${rt.km} km ${rt.source === "road" ? "by road" : "(estimate)"}</div>`).join("") +
+      r.plan.blocked.map(b => `<div class="num" style="color:var(--red)">${esc(b.need_id)}: no road route around ${b.hazards.map(esc).join(", ")}</div>`).join("") +
+      [...r.plan.no_truck, ...r.plan.stockout].map(b => `<div class="num" style="color:var(--amber)">${esc(b.need_id)}: no free truck or stock at ${esc(b.depot_id)}</div>`).join(""));
+    for (const h of r.heals) { const [tag, cls] = healTag(h); ev(tag, cls, esc(h)); }
+    ev("STATUS", w.left_waiting ? "bad" : "good", `${w.routes} truck(s) out with ${w.units} units · ${w.left_waiting} incident(s) still waiting` +
+      `${w.road ? " · planned on real road distances" : " · planned on estimates"}. Each driver sees the route at their truck link (Fleet panel).`);
     updateAI(r.heals);
-    await pipeRun(t.info.blocked.length || t.info.new_hazards.length, 4);
+    await pipeRun(r.heals.length > 0, r.heals.length ? 4 : 2);
   } catch (e) { $("pipe").classList.remove("busy"); ev("ERROR", "bad", esc(e.message)); }
   finally { opsBusy = false; $("wave").disabled = false; $("wave").textContent = "Dispatch wave"; }
 };
@@ -625,26 +873,85 @@ $("sitrepDownload").onclick = () => {
 $("sitrepClose").onclick = () => $("sitrepDlg").close();
 
 $("opsReset").onclick = async () => {
-  if (!confirm("Start a new operation? This clears the incident queue and hazards and restocks every depot.")) return;
+  if (!confirm("Start a new operation? This clears incidents, routes and hazards, restocks every depot and gives every truck a new driver link.")) return;
   try {
     const r = await api("/api/ops/reset", { method: "POST" });
-    opsSeen = new Set(); opsLastWave = null; renderOps(r.ops, r.summary); drawOpsMap();
+    opsSeen = new Set(); stopSeen = null; routeSeen = null; renderOps(r.ops, r.summary);
     $("log").innerHTML = '<div class="empty">New operation started. Depots restocked.</div>';
   } catch (e) { ev("ERROR", "bad", esc(e.message)); }
 };
 
+// ---- resources -----------------------------------------------------------------------------------
+async function admin(call, msg) {
+  try {
+    const r = await call();
+    noteChanges(r.ops); renderOps(r.ops, r.summary);
+    if (msg) ev("RESOURCES", "good", esc(msg));
+    return true;
+  } catch (e) { ev("ERROR", "bad", esc(e.message)); return false; }
+}
+
+$("addTruck").onclick = () => admin(() => postJSON("/api/ops/trucks", { depot_id: $("truckDepot").value, capacity: +$("truckCap").value }),
+  `Truck added at ${$("truckDepot").value}. Copy its driver link from the Fleet list.`);
+$("restock").onclick = () => admin(() => postJSON("/api/ops/restock", { depot_id: $("rsDepot").value, item: $("rsItem").value,
+  qty: +$("rsQty").value, note: $("rsNote").value }), `Logged +${$("rsQty").value} ${$("rsItem").value} at ${$("rsDepot").value}.`);
+$("pick").onclick = () => {
+  picking = true; $("map").parentElement.classList.add("picking");
+  $("pickHint").textContent = "Now click the map where the depot is.";
+  $("map").scrollIntoView({ behavior: "smooth", block: "center" });
+};
+$("map").addEventListener("click", e => {
+  if (!picking) return;
+  const b = $("map").getBoundingClientRect();
+  const x = (e.clientX - b.left) / b.width * W, y = (e.clientY - b.top) / b.height * H;
+  picked = { lat: B.latMax - y / H * (B.latMax - B.latMin), lng: B.lngMin + x / W * (B.lngMax - B.lngMin) };
+  picking = false; $("map").parentElement.classList.remove("picking");
+  $("addDepot").disabled = false;
+  $("pickHint").textContent = `Location ${picked.lat.toFixed(4)}, ${picked.lng.toFixed(4)}. Name it and open the depot.`;
+  drawOpsMap();
+});
+$("addDepot").onclick = async () => {
+  if (!picked) return;
+  if (await admin(() => postJSON("/api/ops/depots", { name: $("depName").value, lat: picked.lat, lng: picked.lng }),
+    `Depot "${$("depName").value}" opened with no stock. Log incoming supplies and add trucks to use it.`)) {
+    picked = null; $("addDepot").disabled = true; $("depName").value = ""; $("pickHint").textContent = "Choose “Pick on map”, then click where the depot is."; drawOpsMap();
+  }
+};
+
+document.addEventListener("click", async e => {
+  const b = e.target.closest("[data-copy],[data-recall],[data-service],[data-clear],[data-close]");
+  if (!b) return;
+  const d = b.dataset;
+  if (d.copy) {
+    try { await navigator.clipboard.writeText(d.copy); b.textContent = "copied"; } catch { b.textContent = "copy failed"; }
+    setTimeout(() => { b.textContent = "copy driver link"; }, 1500);
+    return;
+  }
+  if (d.recall) {
+    if (!confirm(`Recall ${d.recall}? Stops not yet recorded go back to the queue and the cargo back into stock.`)) return;
+    if (await admin(() => api(`/api/ops/routes/${d.recall}/recall`, { method: "POST" }), `${d.recall} recalled.`)) refreshMemory();
+  } else if (d.service) admin(() => postJSON(`/api/ops/trucks/${d.service}`, { in_service: d.on === "1" }, "PATCH"));
+  else if (d.clear) admin(() => api(`/api/ops/hazards/${d.clear}/clear`, { method: "POST" }), `${d.clear} cleared: routes may use that road again.`);
+  else if (d.close) {
+    const why = prompt("Why close this request? (resolved locally, duplicate, false report…)");
+    if (why !== null) admin(() => postJSON(`/api/ops/incidents/${d.close}/close`, { reason: why }), `${d.close} closed.`);
+  }
+});
+
 setInterval(() => { if (document.body.dataset.mode === "ops" && !opsBusy && !document.hidden) refreshOps(); }, 5000);
+setInterval(() => { if (document.body.dataset.mode === "ops" && !document.hidden) refreshMemory(); }, 20000);
 
 // ---- startup ------------------------------------------------------------------------------------
 api("/healthz").then(h => {
   aiModel = h.models[0];
   if (h.llm) setAI(0, `Gemini · ${aiModel}`); else setAI(2, "AI key missing · rule-based backup");
 }).catch(() => setAI(2, "Server unreachable"));
-api("/api/memory").then(m => renderMemory(localMem && localMem.episodes && localMem.episodes.length > m.episodes.length ? localMem : m)).catch(() => {});
+initAuth();
+refreshMemory();
 let startMode = "ops";
 try { startMode = localStorage.getItem("reliefroute-mode") || "ops"; } catch {}
-api("/api/scenario").then(s => { opsDepots = s.initial.depots; setMode(startMode); })
-  .catch(() => { $("map").innerHTML = baseMap(); setMode(startMode); });
+$("map").innerHTML = baseMap();
+setMode(startMode);
 </script>
 </body>
 </html>

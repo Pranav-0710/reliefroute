@@ -5,14 +5,16 @@ import threading
 import time
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
 import agent
+import auth
 import mcp_server
 import ops
+import roads
 
 app = FastAPI(title="ReliefRoute")
 STATIC = Path(__file__).parent / "static"
@@ -21,7 +23,7 @@ STATIC = Path(__file__).parent / "static"
 # Per client IP, sliding window, per server instance. Protects the shared Gemini quota and memory
 # of a public deployment; not a substitute for authentication.
 LIMITS = {"dispatch": (8, 600), "train": (60, 600), "mcp": (10, 600), "reset": (5, 600),  # (requests, seconds)
-          "report": (12, 600), "wave": (30, 600), "sitrep": (6, 600)}
+          "report": (12, 600), "wave": (30, 600), "sitrep": (6, 600), "driver": (120, 600), "admin": (60, 600)}
 MCP_COSTLY_TOOLS = {"dispatch_relief", "parse_field_report", "train_agent"}
 _hits: dict[tuple[str, str], list[float]] = {}
 _hits_lock = threading.Lock()
@@ -47,6 +49,28 @@ def check_rate(request: Request, bucket: str):
         _hits[key] = recent
 
 
+# ---- who is asking ---------------------------------------------------------------------------
+def coordinator(request: Request) -> str:
+    """Dependency for coordinator-only actions. With sign-in off (local, tests) the console is open."""
+    try:
+        return auth.coordinator(request.headers.get("authorization", "")) or "console"
+    except auth.Denied as e:
+        raise HTTPException(401, detail=str(e))
+
+
+def is_coordinator(request: Request) -> bool:
+    try:
+        auth.coordinator(request.headers.get("authorization", ""))
+        return True
+    except auth.Denied:
+        return False
+
+
+@app.exception_handler(ops.OpsError)
+def ops_conflict(request: Request, exc: ops.OpsError):
+    return JSONResponse({"detail": str(exc)}, status_code=409)
+
+
 class TrainReq(BaseModel):
     episodes: int = 5
     chaos: bool = True
@@ -69,7 +93,21 @@ def index():
 def healthz():
     return {"ok": True, "llm": agent.llm_available(), "models": agent._models(),
             "rl_policy": agent.policy.available(), "gemini_budget": agent.budget_status(),
-            "storage": ops.store.backend()}
+            "storage": ops.store.backend(), "road_router": roads.enabled(), "coordinator_sign_in": auth.enabled()}
+
+
+@app.get("/api/config")
+def config():
+    return {"firebase": auth.web_config()}
+
+
+@app.get("/api/me")
+def me(request: Request):
+    try:
+        email = auth.coordinator(request.headers.get("authorization", ""))
+        return {"coordinator": True, "email": email, "sign_in": auth.enabled()}
+    except auth.Denied as e:
+        return {"coordinator": False, "email": None, "sign_in": True, "reason": str(e)}
 
 
 @app.post("/api/dispatch")
@@ -110,16 +148,15 @@ def memory():
 
 
 @app.post("/api/memory/reset")
-def memory_reset(request: Request):
+def memory_reset(request: Request, who: str = Depends(coordinator)):
     check_rate(request, "reset")
     agent.reset_memory()
     return agent.load_memory()
 
 
 # ---- live operations ---------------------------------------------------------------------
-class WaveReq(BaseModel):
-    chaos: bool = False
-    ops: dict | None = None  # coordinator's browser copy, restores the operation after a cold start
+def _ops_out(st, request):
+    return {"ops": ops.view(st, is_coordinator(request)), "summary": ops.summary(st)}
 
 
 @app.get("/report")
@@ -127,11 +164,21 @@ def reporter_page():
     return FileResponse(STATIC / "report.html")
 
 
+@app.get("/driver/{token}")
+def driver_page(token: str):
+    return FileResponse(STATIC / "driver.html")
+
+
+@app.get("/track/{token}")
+def track_page(token: str):
+    return FileResponse(STATIC / "track.html")
+
+
 @app.post("/api/reports")
 async def submit_report(request: Request, text: str = Form(""), source: str = Form("console"),
                         lat: str = Form(""), lng: str = Form(""),
                         image: UploadFile | None = File(None), audio: UploadFile | None = File(None)):
-    """A field report from the console or the phone page: intake, then queue as waiting incidents."""
+    """A field report from the console or the phone page: intake, then queue (or merge) as incidents."""
     check_rate(request, "report")
     img, aud = await _media(image), await _media(audio)
     if not (text.strip() or img or aud):
@@ -142,50 +189,139 @@ async def submit_report(request: Request, text: str = Form(""), source: str = Fo
         coords = (float(lat), float(lng)) if lat and lng else None
     except ValueError:
         coords = None
-    made, st = ops.add_report(report, source="phone" if source == "phone" else "console", coords=coords)
-    return {"incidents": made, "intake": report, "heals": heals, "ops": st, "summary": ops.summary(st)}
+    out = await run_in_threadpool(ops.add_report, report, "phone" if source == "phone" else "console", coords)
+    return {"incidents": out["incidents"], "merged": out["merged"], "track": out["track"],
+            "track_url": f"/track/{out['track']}", "intake": report, "heals": heals,
+            **_ops_out(out["ops"], request)}
 
 
 @app.get("/api/ops")
-def ops_state():
-    st = ops.load()
-    return {"ops": st, "summary": ops.summary(st)}
+def ops_state(request: Request):
+    return _ops_out(ops.load(), request)
 
 
 @app.post("/api/ops/wave")
-def ops_wave(req: WaveReq, request: Request):
+def ops_wave(request: Request, who: str = Depends(coordinator)):
     check_rate(request, "wave")
-    ops.sync(req.ops)
-    out = ops.run_wave(chaos=req.chaos)
-    if "error" in out:
-        raise HTTPException(409, detail=out["error"])
-    return {**out, "summary": ops.summary(out["ops"])}
-
-
-class SyncReq(BaseModel):
-    ops: dict | None = None
-
-
-@app.post("/api/ops/sync")
-def ops_sync(req: SyncReq, request: Request):
-    """The coordinator's browser restores an operation that a restarted server instance lost."""
-    check_rate(request, "train")
-    ops.sync(req.ops)
-    st = ops.load()
-    return {"ops": st, "summary": ops.summary(st)}
+    out = ops.run_wave(actor=who)
+    return {**out, **_ops_out(out["ops"], request)}
 
 
 @app.post("/api/ops/reset")
-def ops_reset(request: Request):
+def ops_reset(request: Request, who: str = Depends(coordinator)):
     check_rate(request, "reset")
-    st = ops.reset()
-    return {"ops": st, "summary": ops.summary(st)}
+    return _ops_out(ops.reset(actor=who), request)
 
 
 @app.post("/api/ops/sitrep")
-def ops_sitrep(request: Request):
+def ops_sitrep(request: Request, who: str = Depends(coordinator)):
     check_rate(request, "sitrep")
     return ops.sitrep()
+
+
+class DepotReq(BaseModel):
+    name: str
+    lat: float
+    lng: float
+
+
+class TruckReq(BaseModel):
+    depot_id: str
+    capacity: int = 250
+
+
+class TruckPatch(BaseModel):
+    capacity: int | None = None
+    in_service: bool | None = None
+
+
+class RestockReq(BaseModel):
+    depot_id: str
+    item: str
+    qty: int
+    note: str = ""
+
+
+class ReasonReq(BaseModel):
+    reason: str = ""
+
+
+def _admin(request, who, fn, *args):
+    check_rate(request, "admin")
+    fn(*args, actor=who)
+    return _ops_out(ops.load(), request)
+
+
+@app.post("/api/ops/depots")
+def add_depot(req: DepotReq, request: Request, who: str = Depends(coordinator)):
+    return _admin(request, who, ops.add_depot, req.name, req.lat, req.lng)
+
+
+@app.post("/api/ops/trucks")
+def add_truck(req: TruckReq, request: Request, who: str = Depends(coordinator)):
+    return _admin(request, who, ops.add_truck, req.depot_id, req.capacity)
+
+
+@app.patch("/api/ops/trucks/{truck_id}")
+def edit_truck(truck_id: str, req: TruckPatch, request: Request, who: str = Depends(coordinator)):
+    return _admin(request, who, ops.set_truck, truck_id, req.capacity, req.in_service)
+
+
+@app.post("/api/ops/restock")
+def restock(req: RestockReq, request: Request, who: str = Depends(coordinator)):
+    return _admin(request, who, ops.restock, req.depot_id, req.item, req.qty, req.note)
+
+
+@app.post("/api/ops/hazards/{hazard_id}/clear")
+def clear_hazard(hazard_id: str, request: Request, who: str = Depends(coordinator)):
+    return _admin(request, who, ops.clear_hazard, hazard_id)
+
+
+@app.post("/api/ops/incidents/{incident_id}/close")
+def close_incident(incident_id: str, req: ReasonReq, request: Request, who: str = Depends(coordinator)):
+    return _admin(request, who, ops.close_incident, incident_id, req.reason)
+
+
+@app.post("/api/ops/routes/{route_id}/recall")
+def recall_route(route_id: str, request: Request, who: str = Depends(coordinator)):
+    check_rate(request, "admin")
+    out = ops.recall_route(route_id, actor=who)
+    return {"learned": out["learned"], **_ops_out(ops.load(), request)}
+
+
+# ---- drivers and reporters (no sign-in: the link itself is the secret) ----------------------------
+class StopReq(BaseModel):
+    outcome: str
+    qty: int | None = None
+    note: str = ""
+    lat: float | None = None
+    lng: float | None = None
+
+
+@app.get("/api/driver/{token}")
+def driver_state(token: str):
+    out = ops.driver_view(token)
+    if out is None:
+        raise HTTPException(404, detail="Unknown driver link. Ask the coordinator for your truck's link.")
+    return out
+
+
+@app.post("/api/driver/{token}/stops/{n}")
+def driver_stop(token: str, n: int, req: StopReq, request: Request):
+    check_rate(request, "driver")
+    if ops.driver_view(token) is None:
+        raise HTTPException(404, detail="Unknown driver link.")
+    coords = (req.lat, req.lng) if req.lat is not None and req.lng is not None else None
+    out = ops.driver_update(token, n, req.outcome, req.qty, req.note, coords)
+    return {"learned": out["learned"], "closed": bool(out["closed"]), **ops.driver_view(token)}
+
+
+@app.get("/api/track/{token}")
+def track_state(token: str):
+    out = ops.track_view(token)
+    if out is None:
+        raise HTTPException(404, detail="Unknown tracking link.")
+    return out
 
 
 @app.post("/mcp")

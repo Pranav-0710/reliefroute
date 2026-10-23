@@ -20,7 +20,8 @@ N_NEED, N_PAIR = 8, 11
 
 def _fleet(obs):
     """Mirror of env.ReliefEnv._new_fleet: every truck starts the round empty at its depot."""
-    return {t: {"depot": d["id"], "pos": (d["lat"], d["lng"]), "cap": obs["truck_capacity"], "hours": 0.0, "stops": 0}
+    return {t: {"depot": d["id"], "pos": (d["lat"], d["lng"]), "cap": d.get("capacity", {}).get(t, obs["truck_capacity"]),
+                "hours": 0.0, "stops": 0}
             for d in obs["depots"] for t in d["trucks"]}
 
 
