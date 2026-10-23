@@ -271,7 +271,7 @@ The latest 200 episodes are kept.
 | Driver reports a blocked road | Stop outcome `blocked` | New hazard at the driver's GPS position, incident back in the queue, next wave's router avoids the area | `BLOCKED`, `REROUTE` |
 | Delivery fails or a route is recalled | Stop outcome `failed`, or recall | Incident back in the queue with the reason; unused cargo back into stock; truck free again | `DRIVER` |
 | A truck leaves on another route while a wave is planned | Truck not idle when the wave is applied | That truck's stops stay queued for the next wave | `FALLBACK` |
-| The same need is reported twice | Same item, open, within 0.5 km and 12 hours | Merged into one request (larger quantity, higher urgency) | `MERGED` |
+| The same need is reported twice | Same item, open, same place (0.5 km between GPS fixes, same locality for guessed positions), within 12 hours | Merged into one request (larger quantity, higher urgency) | `MERGED` |
 | Two instances write the operation at once | Firestore precondition fails | Re-read and retry the change on fresh data | – |
 | Serverless instance lost its memory (file storage only) | Browser copy has more episodes than the server's | Server adopts the browser copy after sanitising it | – |
 
@@ -393,7 +393,7 @@ When a rate limit is hit, the response is HTTP 429 with `Retry-After`. MCP gets 
 | `test_firestore_writes_never_lose_a_concurrent_update` | Against a fake Firestore with real preconditions: a write that races another instance is rejected and retried, and both changes survive |
 | `test_operations_and_memory_run_on_firestore` | A report, a wave and a training episode all persist through the Firestore backend |
 | `test_operations_report_wave_driver_and_sitrep_over_the_api` | Over HTTP:<br/>- a phone report placed by GPS, with a working tracking link<br/>- a wave loading exactly the dispatched units off the depots and sending trucks out<br/>- the driver page and route, a driver closing a route<br/>- a repeated stop and an unknown link rejected<br/>- situation report, reset, empty-queue 409 |
-| `test_duplicate_reports_merge_instead_of_sending_two_trucks` | Same need nearby merges (larger quantity, higher urgency, report count); another place does not |
+| `test_duplicate_reports_merge_instead_of_sending_two_trucks` | Same need nearby merges (larger quantity, higher urgency, report count); a phone's GPS merges with a locality-level guess 1.2 km away; another place, or two GPS fixes 1 km apart, do not |
 | `test_failed_and_blocked_stops_return_to_queue_and_teach_the_agent` | A short delivery, a blocked road and a failed delivery:<br/>- queue and notes<br/>- a hazard at the driver's GPS<br/>- cargo returned to stock, trucks free<br/>- lessons, the ETA correction learned from a late arrival, and the next wave using it |
 | `test_recall_resources_and_their_guards` | Recall; new depot (outside Chennai refused); new truck (bad capacity refused); restock (unknown item refused); out of service (refused while on a route); closing a request |
 | `test_hazards_are_avoided_by_the_router_and_can_be_cleared` | Against a fake router: hazards sent as excluded areas, road geometry decoded, a hazard cleared; with the router down, the wave falls back to estimates and logs it |
@@ -482,7 +482,7 @@ A coordinator can also recall a route; its unvisited stops are `skipped` and ret
 **Duplicate merging.** A new need is merged into an existing incident when all of these hold:
 - same item
 - the incident is still open
-- within 0.5 km
+- the same place: within 0.5 km when both positions are GPS. A position guessed from a place name is only precise to the locality, so then the same locality name, or within 1.5 km, is enough. (Live testing showed Gemini's guess for "Velachery" 1.2 km from a phone's GPS in Velachery.)
 - reported in the last 12 hours
 
 The larger requested quantity and the higher urgency win, a GPS position improves a guessed one, and `reports` counts the reports. The reporter is told their report was added to an existing request, and their tracking link follows it.

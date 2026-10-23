@@ -31,7 +31,8 @@ OPS_STOCK = 400  # units of each item per depot when an operation starts
 LOW_STOCK = 100
 CHENNAI = (12.8, 13.35, 80.0, 80.4)  # lat min, lat max, lng min, lng max
 SERVICE_MIN = 10  # unloading time per stop
-DUP_KM = 0.5  # same item this close, still open, reported within DUP_WINDOW_S -> the same need
+DUP_KM = 0.5  # two GPS positions this close, same item, still open, within DUP_WINDOW_S -> the same need
+DUP_GUESS_KM = 1.5  # when a position was guessed from a place name
 DUP_WINDOW_S = 12 * 3600
 KEEP_SHAPES = 20  # closed routes that keep their road geometry
 BLOCKED_RADIUS_KM = 0.5
@@ -138,12 +139,18 @@ def _add_hazard(st, label, lat, lng, radius_km, source):
 
 
 # ---- field reports ----------------------------------------------------------------------------
-def _duplicate_of(st, item, lat, lng, now):
-    """An open incident for the same item close by and reported recently: the same need reported twice."""
+def _duplicate_of(st, item, zone, lat, lng, gps, now):
+    """An open incident for the same item at the same place, reported recently: the same need reported
+    twice. Two GPS positions must be within DUP_KM; a position guessed from a place name is only as
+    precise as the locality, so then the same locality (or DUP_GUESS_KM) is enough."""
+    def same_place(i, km):
+        if gps and i["located_by"] == "gps":
+            return km <= DUP_KM
+        return km <= DUP_GUESS_KM or i["zone"].strip().lower() == str(zone).strip().lower()
     near = [(_km((lat, lng), (i["lat"], i["lng"])), i) for i in st["incidents"]
             if i["item"] == item and not i["closed"] and (i["qty"] > 0 or i["assigned"] > 0)
             and now - i["reported_at"] <= DUP_WINDOW_S]
-    near = [x for x in near if x[0] <= DUP_KM]
+    near = [x for x in near if same_place(x[1], x[0])]
     return min(near, key=lambda x: x[0])[1] if near else None
 
 
@@ -157,7 +164,7 @@ def add_report(report, source="console", coords=None, actor=None):
         made, merged = [], []
         for n in report["needs"]:
             lat, lng = gps if gps else (n["lat"], n["lng"])
-            dup = _duplicate_of(st, n["item"], lat, lng, now)
+            dup = _duplicate_of(st, n["item"], n["zone"], lat, lng, bool(gps), now)
             if dup:  # the larger figure wins: two people describing one need must not send two trucks
                 extra = max(0, n["qty"] - dup["requested"])
                 dup.update(requested=dup["requested"] + extra, qty=dup["qty"] + extra,

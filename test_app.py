@@ -281,6 +281,13 @@ def test_duplicate_reports_merge_instead_of_sending_two_trucks():
     assert (merged["requested"], merged["qty"], merged["urgency"], merged["reports"]) == (150, 150, 5, 2)
     far = ops.add_report({"summary": "c", "hazards": [], "needs": [_need("Ennore", "water", 50)]})
     assert far["incidents"] and not far["merged"]  # another place is another need
+    # a position guessed from "Velachery" is only locality-precise: a phone's GPS 1.2 km away is the same need
+    phone = ops.add_report({"summary": "d", "hazards": [], "needs": [_need("Velachery", "water", 90)]},
+                           source="phone", coords=(12.9815 + 0.011, 80.2180))
+    assert [i["id"] for i in phone["merged"]] == [inc["id"]]
+    other = ops.add_report({"summary": "e", "hazards": [], "needs": [_need("Velachery", "water", 30)]},
+                           source="phone", coords=(12.9815 + 0.011 + 0.009, 80.2180))
+    assert other["incidents"] and not other["merged"]  # two GPS positions 1 km apart are two needs
     assert [i["id"] for i in ops.track_view(again["track"])["incidents"]] == [again["incidents"][0]["id"], inc["id"]]
 
 
