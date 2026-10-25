@@ -15,6 +15,10 @@
           --ok:#1f7a4d; --warn:#9a5b00; --bad:#b42318; --accent:#17191c; }
   * { box-sizing:border-box; }
   [hidden] { display:none !important; }
+  body { touch-action:manipulation; }
+  button, a, label.tile, summary { -webkit-tap-highlight-color:transparent; transition:background-color .15s ease-out, border-color .15s ease-out, transform .1s ease-out; }
+  button:active:not(:disabled), a:active, label.tile:active { transform:scale(.98); }
+  @media (prefers-reduced-motion:reduce) { button:active, a:active, label.tile:active { transform:none; } }
   body { margin:0; background:var(--bg); color:var(--text); font:17px/1.5 "IBM Plex Sans", system-ui, sans-serif;
          padding:16px 16px calc(24px + env(safe-area-inset-bottom)); }
   main { max-width:520px; margin:0 auto; }

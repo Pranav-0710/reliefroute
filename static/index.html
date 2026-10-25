@@ -19,6 +19,18 @@
   }
   * { box-sizing:border-box; }
   [hidden] { display:none !important; }
+  body { touch-action:manipulation; }
+  .skip { position:absolute; left:12px; top:-70px; z-index:30; background:var(--text); color:#121416; padding:12px 16px; min-height:44px; border-radius:6px; font-weight:600; }
+  .skip:focus { top:8px; }
+  .brand h1 { font-size:16px; font-weight:600; letter-spacing:-.01em; margin:0; }
+  .btn, .tab, .mode, .sidetabs button, .linkbtn, .link { transition:background-color .15s ease-out, border-color .15s ease-out, color .15s ease-out; }
+  .btn:active:not([aria-disabled="true"]):not(:disabled) { transform:translateY(1px); }
+  .mode { min-height:var(--tap); }
+  details.more summary { min-height:var(--tap); display:flex; align-items:center; }
+  @media (max-width:767px) {
+    .link.small { min-width:44px; display:inline-flex; align-items:center; justify-content:center; }
+    input, select, textarea { font-size:16px !important; }
+  }
   body { margin:0; background:var(--bg); color:var(--text); font:14px/1.5 var(--sans); -webkit-font-smoothing:antialiased; }
   button, input, textarea { font:inherit; color:inherit; }
 
@@ -30,7 +42,8 @@
   .dot { display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--faint); margin-right:7px; vertical-align:1px; }
   .dot.ok { background:var(--green); } .dot.warn { background:var(--amber); } .dot.bad { background:var(--red); }
 
-  main { display:grid; grid-template-columns:320px minmax(0,1fr) 320px; gap:1px; background:var(--line); min-height:calc(100vh - 49px); }
+  main { display:grid; grid-template-columns:320px minmax(0,1fr) 320px; gap:1px; background:var(--line); min-height:calc(100vh - 49px); min-height:calc(100dvh - 49px); }
+  main:focus { outline:none; }
   @media (min-width:1440px) { main { grid-template-columns:340px minmax(0,1fr) 340px; } }
   @media (max-width:1149px) { main { grid-template-columns:320px minmax(0,1fr); } #side { grid-column:1 / -1; } }
   @media (max-width:767px) { main { grid-template-columns:1fr; } :root { --tap:44px; } .brand span { display:none; } }
@@ -164,7 +177,7 @@
   .pill[data-tone=bad]::before { background:var(--red); } .pill[data-tone=info]::before { background:var(--blue); }
   .pill.plain::before { display:none; }
   .status { align-items:center; gap:8px; }
-  .status .linkbtn { background:none; border:0; color:var(--text); font:12px var(--mono); text-decoration:underline; text-underline-offset:3px; cursor:pointer; padding:4px; }
+  .status .linkbtn { min-height:var(--tap); background:none; border:0; color:var(--text); font:12px var(--mono); text-decoration:underline; text-underline-offset:3px; cursor:pointer; padding:4px; }
 
   .viewonly { display:flex; gap:12px; align-items:center; flex-wrap:wrap; padding:10px 20px; background:var(--blue-bg); border-bottom:1px solid var(--line); font-size:13.5px; }
   .viewonly b { font-weight:600; }
@@ -214,8 +227,9 @@
 </style>
 </head>
 <body>
+<a class="skip" href="#main">Skip to the operation</a>
 <header>
-  <div class="brand"><b>ReliefRoute</b><span>Flood-relief dispatch agent · Chennai</span></div>
+  <div class="brand"><h1>ReliefRoute</h1><span>Flood-relief dispatch agent · Chennai</span></div>
   <div class="status">
     <button class="linkbtn" id="howBtn" type="button">How it works</button>
     <span class="pill" id="sync" data-show="ops" title="When the console last got fresh data from the server">Connecting…</span>
@@ -230,7 +244,7 @@
   <button class="btn" type="button" id="tryIt">Try the simulator</button>
   <button class="btn primary" type="button" id="vSignIn">Coordinator sign-in</button>
 </div>
-<main>
+<main id="main" tabindex="-1">
   <div id="opsbar" data-show="ops">
     <div class="figs2" id="opsfig" aria-live="polite"></div>
     <div class="act">
@@ -252,6 +266,7 @@
         <button class="tab" data-t="पेरम्बूर में 80 लोग फंसे हैं, खाना और कंबल चाहिए। बच्चे और बुज़ुर्ग भी हैं, जल्दी भेजिए।">Hindi</button>
         <button class="tab" data-t="Royapuram relief camp: 150 people need food packets and blankets tonight. Ennore road is underwater.">English</button>
       </div>
+      <label for="text" class="sr-only">Field report text, any language</label>
       <textarea id="text" placeholder="Type or paste a report in any language. You can also attach a photo or a voice note."></textarea>
       <div class="row">
         <label class="btn"><input type="file" id="image" accept="image/*" class="sr-only">Photo</label>
@@ -327,7 +342,7 @@
       <details class="more" data-coord><summary>Add a truck</summary>
         <div class="mini"><select id="truckDepot" aria-label="Depot"></select>
           <input id="truckCap" type="number" min="20" max="2000" value="250" aria-label="Capacity in units">
-          <button class="btn" id="addTruck">Add</button></div>
+          <button class="btn" id="addTruck">Add truck</button></div>
       </details>
     </div>
     <div class="block off" data-show="ops" data-pane="stock" role="tabpanel">
