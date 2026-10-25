@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#f6f5f2">
+<meta name="theme-color" content="#0a0c0f">
 <title>ReliefRoute field report</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%23111315'/><path d='M8 23 L15 14 L24 9' stroke='%235fb37f' stroke-width='3' fill='none' stroke-linecap='round'/><circle cx='24' cy='9' r='3.2' fill='%23e3a33b'/></svg>">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -59,9 +59,32 @@
   .mine a small { color:var(--muted); white-space:nowrap; }
   footer { margin-top:22px; color:var(--muted); font-size:13px; }
   footer a { color:var(--muted); }
+
+  /* ---- mission-control theme shared with the console: dark top bar, square corners, one orange action ---- */
+  :root { --bg:#f3f2ee; --card:#ffffff; --line:#d6d3cc; --line-strong:#8a8780; --text:#14171a; --muted:#565b62;
+          --ok:#1d7a4c; --bad:#b42318; --signal:#ff7a1a; --signal-ink:#160b02; --ok-bg:#e8f2ec; --bad-bg:#fbebe9; }
+  body { padding-top:0 !important; }
+  .topbar { position:sticky; top:0; z-index:6; display:flex; align-items:center; gap:12px; margin:0 -16px 20px; padding:0 16px;
+            height:52px; background:#0a0c0f; color:#e9e7e3; }
+  .topbar .mark { display:flex; align-items:center; gap:9px; font:600 13px "IBM Plex Mono", monospace; letter-spacing:.16em; }
+  .topbar .mark::before { content:""; width:9px; height:9px; background:var(--signal); }
+  .topbar .ctx { color:#a1a9b2; font-size:13px; padding-left:12px; border-left:1px solid #2b333d; white-space:nowrap; }
+  .topbar .right { margin-left:auto; font:12px "IBM Plex Mono", monospace; color:#a1a9b2; white-space:nowrap; }
+  .topbar .right[data-tone=ok] { color:#3ddc97; } .topbar .right[data-tone=warn] { color:var(--signal); }
+  .topbar .right[data-tone=bad] { color:#ff5a52; } .topbar .right[data-tone=info] { color:#6ea8fe; }
+  h1 { font-size:24px !important; letter-spacing:-.015em; margin-top:0 !important; }
+  .card, .stop, .tile, textarea, input, button, .btn, .detail, .map, .refresh, .card a.track, .dock > div, .dock button { border-radius:2px !important; }
+  .card, .stop { border-width:1px !important; }
+  footer { border-top:1px solid var(--line); padding-top:14px; }
+
+  button.send { background:var(--signal) !important; color:var(--signal-ink) !important; font-weight:700 !important; letter-spacing:.01em; }
+  .tile { border-width:1px !important; } .tile.on { border-width:2px !important; }
+  textarea { border-width:1px !important; }
+  .card.ok { border-left:5px solid var(--ok) !important; } .card.bad { border-left:5px solid var(--bad) !important; }
 </style>
 </head>
 <body>
+<header class="topbar"><span class="mark">RELIEFROUTE</span><span class="ctx">Field report</span><span class="right">Chennai</span></header>
 <main>
   <h1>Field report</h1>
   <p class="sub">ReliefRoute · Chennai flood relief. Your report goes straight to the coordination desk.</p>

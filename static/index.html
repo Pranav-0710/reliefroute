@@ -3,341 +3,390 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ReliefRoute</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%23111315'/><path d='M8 23 L15 14 L24 9' stroke='%235fb37f' stroke-width='3' fill='none' stroke-linecap='round'/><circle cx='24' cy='9' r='3.2' fill='%23e3a33b'/></svg>">
+<meta name="theme-color" content="#0a0c0f">
+<title>ReliefRoute · Chennai flood operation</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' fill='%230a0c0f'/><rect x='6' y='6' width='9' height='9' fill='%23ff7a1a'/><path d='M8 25 L16 18 L25 9' stroke='%23e9e7e3' stroke-width='3' fill='none'/></svg>">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
   :root {
-    --bg:#0f1113; --panel:#16191c; --line:#24282d; --line-2:#323840;
-    --text:#e7e5e2; --muted:#8b9199; --faint:#7b828b; --rule:#5c626a; --focus:#9db8da; --tap:32px;
-    --amber-bg:#2a2214; --red-bg:#2c1817; --green-bg:#15251c; --blue-bg:#18212c;
-    --blue:#7a9cc6; --amber:#e3a33b; --red:#e0574f; --green:#5fb37f; --map:#0b0d0f;
+    --bg:#0a0c0f; --panel:#0f1216; --panel-2:#151a20; --line:#1d232a; --line-2:#2b333d;
+    --text:#e9e7e3; --muted:#a1a9b2; --faint:#7d858f;
+    --signal:#ff7a1a; --signal-ink:#160b02; --signal-bg:#2a1608;
+    --road:#3ddc97; --enroute:#6ea8fe; --hazard:#ff5a52; --ok:#3ddc97;
     --mono:"IBM Plex Mono", ui-monospace, Consolas, monospace;
     --sans:"IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --tap:32px; --bar:48px;
   }
   * { box-sizing:border-box; }
   [hidden] { display:none !important; }
-  body { touch-action:manipulation; }
-  .skip { position:absolute; left:12px; top:-70px; z-index:30; background:var(--text); color:#121416; padding:12px 16px; min-height:44px; border-radius:6px; font-weight:600; }
-  .skip:focus { top:8px; }
-  .brand h1 { font-size:16px; font-weight:600; letter-spacing:-.01em; margin:0; }
-  .btn, .tab, .mode, .sidetabs button, .linkbtn, .link { transition:background-color .15s ease-out, border-color .15s ease-out, color .15s ease-out; }
-  .btn:active:not([aria-disabled="true"]):not(:disabled) { transform:translateY(1px); }
-  .mode { min-height:var(--tap); }
-  details.more summary { min-height:var(--tap); display:flex; align-items:center; }
-  @media (max-width:767px) {
-    .link.small { min-width:44px; display:inline-flex; align-items:center; justify-content:center; }
-    input, select, textarea { font-size:16px !important; }
-  }
-  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.5 var(--sans); -webkit-font-smoothing:antialiased; }
-  button, input, textarea { font:inherit; color:inherit; }
-
-  header { display:flex; align-items:center; gap:16px; padding:12px 20px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
-  .brand { display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; }
-  .brand b { font-size:16px; font-weight:600; letter-spacing:-.01em; }
-  .brand span { color:var(--muted); font-size:13px; }
-  .status { margin-left:auto; display:flex; gap:18px; font:12px var(--mono); color:var(--muted); flex-wrap:wrap; }
-  .dot { display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--faint); margin-right:7px; vertical-align:1px; }
-  .dot.ok { background:var(--green); } .dot.warn { background:var(--amber); } .dot.bad { background:var(--red); }
-
-  main { display:grid; grid-template-columns:320px minmax(0,1fr) 320px; gap:1px; background:var(--line); min-height:calc(100vh - 49px); min-height:calc(100dvh - 49px); }
-  main:focus { outline:none; }
-  @media (min-width:1440px) { main { grid-template-columns:340px minmax(0,1fr) 340px; } }
-  @media (max-width:1149px) { main { grid-template-columns:320px minmax(0,1fr); } #side { grid-column:1 / -1; } }
-  @media (max-width:767px) { main { grid-template-columns:1fr; } :root { --tap:44px; } .brand span { display:none; } }
-  section { background:var(--bg); padding:18px 20px; min-width:0; }
-  h2 { font:500 11px var(--mono); letter-spacing:.08em; text-transform:uppercase; color:var(--muted); margin:0 0 10px; }
-  .block + .block { margin-top:22px; padding-top:20px; border-top:1px solid var(--line); }
-  .hint { color:var(--muted); font-size:12.5px; margin:0; }
-
-  .samples { display:flex; gap:4px; flex-wrap:wrap; align-items:center; margin-bottom:8px; font-size:12px; color:var(--muted); }
-  .samples span { width:100%; font-size:11.5px; }
-  .tab { background:none; border:1px solid var(--line); padding:2px 10px; min-height:var(--tap); border-radius:4px; font-size:12.5px; cursor:pointer; }
-  .tab:hover { border-color:var(--line-2); background:var(--panel); }
-  textarea { width:100%; min-height:120px; resize:vertical; background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:10px; line-height:1.45; }
-  textarea:focus { border-color:var(--blue); }
-
-  .btn { display:inline-flex; align-items:center; gap:6px; background:transparent; border:1px solid var(--line-2); border-radius:6px; padding:6px 11px; font-size:13px; cursor:pointer; }
-  .btn:hover { background:var(--panel); }
-  .btn.primary { width:100%; justify-content:center; background:var(--text); color:#121416; border-color:var(--text); padding:10px; font-weight:600; }
-  .btn.primary:hover { background:#fff; }
-  .btn:disabled { opacity:.5; cursor:progress; }
-  .btn .rec { width:8px; height:8px; border-radius:50%; background:var(--red); }
-  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:10px; }
-  .modes { display:grid; grid-template-columns:1fr 1fr; border:1px solid var(--line); border-radius:6px; overflow:hidden; margin-bottom:18px; }
-  .mode { background:none; border:0; padding:8px; font:500 13px var(--sans); color:var(--muted); cursor:pointer; }
-  .mode.on { background:var(--panel); color:var(--text); box-shadow:inset 0 -2px 0 var(--text); }
-  body[data-mode="ops"] [data-show="sim"], body[data-mode="sim"] [data-show="ops"] { display:none; }
-  .opsfig { font:12px var(--mono); color:var(--muted); margin:-4px 0 8px; }
-  .opsfig b { color:var(--text); font-weight:500; }
-  #queueList { max-height:300px; overflow:auto; margin-bottom:4px; }
-  .inc { border-left:3px solid var(--amber); padding:6px 9px; margin:5px 0; background:var(--panel); border-radius:4px; font-size:13px; }
-  .inc.delivered { border-color:var(--green); }
-  .inc .meta { color:var(--muted); font-size:12px; }
-  .inc .id { font-family:var(--mono); color:var(--muted); margin-right:4px; }
-  dialog { background:var(--panel); color:var(--text); border:1px solid var(--line-2); border-radius:8px; padding:0; width:min(680px, 92vw); }
-  dialog::backdrop { background:#000a; }
-  dialog .dhead { display:flex; justify-content:space-between; align-items:center; padding:12px 16px; border-bottom:1px solid var(--line); }
-  dialog pre { margin:0; padding:16px; max-height:60vh; overflow:auto; white-space:pre-wrap; font:13px/1.55 var(--mono); }
-  dialog .dfoot { display:flex; gap:8px; justify-content:flex-end; padding:12px 16px; border-top:1px solid var(--line); }
-  #attached { font:12px var(--mono); color:var(--muted); margin-top:6px; min-height:18px; }
-  #attached a { color:var(--muted); margin-left:6px; cursor:pointer; text-decoration:underline; }
-  .check { display:flex; gap:8px; align-items:flex-start; font-size:13px; margin:14px 0; cursor:pointer; }
-  .check input { margin-top:3px; accent-color:var(--amber); }
-
-  .pipe { display:grid; grid-template-columns:repeat(auto-fit, minmax(76px, 1fr)); gap:4px; margin-bottom:18px; }
-  .pipe div { border-top:3px solid var(--line-2); padding-top:6px; font-size:12px; color:var(--faint); transition:color .2s, border-color .2s; }
-  .pipe div i { font:normal 11px var(--mono); margin-right:4px; }
-  .pipe div.on { border-color:var(--blue); color:var(--text); }
-  .pipe div.on.heal { border-color:var(--amber); } .pipe div.on.learn { border-color:var(--green); }
-  .pipe.busy div { animation:pulse 1.4s ease-in-out infinite; }
-  @keyframes pulse { 50% { opacity:.35; } }
-
-  .maphead { display:flex; justify-content:space-between; align-items:baseline; gap:12px; flex-wrap:wrap; }
-  .legend { display:flex; gap:12px; flex-wrap:wrap; font-size:11.5px; color:var(--muted); margin-bottom:8px; }
-  .legend svg { vertical-align:-2px; margin-right:4px; }
-  .map { border:1px solid var(--line); border-radius:6px; overflow:hidden; background:var(--map); }
-  .map svg { display:block; width:100%; height:auto; }
-
-  .log { max-height:380px; overflow:auto; border:1px solid var(--line); border-radius:6px; }
-  .ev { display:grid; grid-template-columns:82px 1fr; gap:10px; padding:8px 12px; border-bottom:1px solid var(--line); font-size:13px; }
-  .ev:last-child { border-bottom:0; }
-  .ev .sub { color:var(--muted); }
-  .tag { font:500 10.5px var(--mono); letter-spacing:.06em; padding-top:2px; color:var(--muted); }
-  .tag.intake { color:var(--blue); } .tag.alert, .tag.bad { color:var(--red); } .tag.heal { color:var(--amber); }
-  .tag.good, .tag.lesson { color:var(--green); }
-  .empty { padding:14px 12px; color:var(--muted); font-size:13px; }
-  .num, td.n { font-family:var(--mono); }
-
-  .kpis { display:grid; grid-template-columns:1fr 1fr; gap:1px; background:var(--line); border:1px solid var(--line); border-radius:6px; overflow:hidden; margin-bottom:18px; }
-  .kpi { background:var(--bg); padding:10px 12px; }
-  .kpi b { display:block; font:500 22px/1.2 var(--mono); letter-spacing:-.02em; }
-  .kpi span { font-size:11.5px; color:var(--muted); }
-  .up { color:var(--green); } .down { color:var(--amber); }
-  .chart { border:1px solid var(--line); border-radius:6px; background:var(--map); }
-  .chart svg { display:block; width:100%; height:auto; }
-  .pol { display:grid; grid-template-columns:104px 1fr 42px 26px; gap:8px; align-items:center; font-size:12.5px; padding:5px 0; border-bottom:1px solid var(--line); }
-  .pol .name { font-family:var(--mono); }
-  .pol .bar { height:6px; background:var(--panel); border-radius:3px; overflow:hidden; }
-  .pol .bar i { display:block; height:100%; background:var(--line-2); }
-  .pol.best .name { color:var(--green); } .pol.best .bar i { background:var(--green); }
-  .pol .runs { color:var(--muted); text-align:right; font-family:var(--mono); }
-  .polhead { color:var(--faint); font-size:11px; border-bottom:1px solid var(--line); }
-  ol.lessons { margin:0; padding-left:20px; font-size:13px; }
-  ol.lessons li { margin:6px 0; } ol.lessons li::marker { font-family:var(--mono); color:var(--faint); }
-
-  /* live operations */
-  #who a, .link { color:var(--text); background:none; border:0; padding:0; font:inherit; text-decoration:underline; text-underline-offset:2px; cursor:pointer; }
-  .link.small { font-size:12.5px; color:var(--muted); min-height:var(--tap); padding:4px 0; }
-  .inc.en_route { border-color:var(--blue); } .inc.closed { border-color:var(--rule); color:var(--muted); }
-  .inc .top { display:flex; justify-content:space-between; gap:8px; align-items:baseline; }
-  .badge { font:500 10.5px var(--mono); color:var(--muted); border:1px solid var(--line-2); border-radius:3px; padding:0 4px; margin-left:4px; }
-  .rowlist > div { display:flex; justify-content:space-between; gap:10px; align-items:baseline; padding:7px 0; border-bottom:1px solid var(--line); font-size:13px; }
-  .rowlist > div:last-child { border-bottom:0; }
-  .rowlist .sub { color:var(--muted); font-size:12px; }
-  .rowlist .acts { display:flex; gap:10px; flex-wrap:wrap; justify-content:flex-end; }
-  .st { font:500 10.5px var(--mono); letter-spacing:.05em; text-transform:uppercase; }
-  .st.idle { color:var(--green); } .st.on_route { color:var(--blue); } .st.out_of_service { color:var(--faint); }
-  table.stock { width:100%; border-collapse:collapse; font-size:12.5px; }
-  table.stock th { font:500 10.5px var(--mono); color:var(--faint); text-align:right; padding:4px 0 4px 6px; border-bottom:1px solid var(--line); }
-  table.stock th:first-child, table.stock td:first-child { text-align:left; padding-left:0; }
-  table.stock td { padding:5px 0 5px 6px; border-bottom:1px solid var(--line); text-align:right; font-family:var(--mono); }
-  table.stock td:first-child { font-family:var(--sans); }
-  table.stock td.low { color:var(--amber); }
-  .mini { display:grid; grid-template-columns:repeat(auto-fit, minmax(80px, 1fr)); gap:6px; margin-top:10px; }
-  .mini input, .mini select { width:100%; min-width:0; background:var(--panel); border:1px solid var(--line); border-radius:5px; padding:5px 7px; font-size:12.5px; }
-  .mini .btn { justify-content:center; }
-  details.more { margin-top:10px; font-size:12.5px; }
-  details.more summary { cursor:pointer; color:var(--muted); }
-  .figs { display:grid; grid-template-columns:1fr 1fr; gap:1px; background:var(--line); border:1px solid var(--line); border-radius:6px; overflow:hidden; margin-bottom:10px; }
-  .figs div { background:var(--bg); padding:8px 10px; }
-  .figs b { display:block; font:500 18px/1.2 var(--mono); }
-  .figs span { font-size:11.5px; color:var(--muted); }
-  .activity { font-size:12.5px; max-height:220px; overflow:auto; }
-  .activity div { padding:4px 0; border-bottom:1px solid var(--line); }
-  .activity time { font-family:var(--mono); color:var(--faint); margin-right:6px; }
-  .map.picking svg { cursor:crosshair; }
-
-  /* ---- UX layer: focus, status, read-only, command bar, tabs, toasts, empty and loading states ---- */
-  :focus-visible { outline:2px solid var(--focus); outline-offset:2px; }
-  @media (prefers-reduced-motion:reduce) { *, *::before, *::after { animation:none !important; transition:none !important; scroll-behavior:auto !important; } }
+  html, body { height:100%; }
+  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.5 var(--sans); -webkit-font-smoothing:antialiased;
+         touch-action:manipulation; display:grid; grid-template-rows:auto auto minmax(0,1fr); height:100dvh; overflow:hidden; }
+  button, input, textarea, select { font:inherit; color:inherit; }
+  :focus-visible { outline:2px solid var(--signal); outline-offset:2px; }
+  @media (prefers-reduced-motion:reduce) { *, *::before, *::after { animation:none !important; transition:none !important; } }
   .sr-only { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
-  label.btn:focus-within { outline:2px solid var(--focus); outline-offset:2px; }
-  .btn { min-height:var(--tap); }
-  .btn.danger { color:var(--red); border-color:#6b2e2b; } .btn.danger:hover { background:var(--red-bg); }
-  .btn.block { width:100%; justify-content:center; }
-  .btn[aria-disabled="true"] { border-style:dashed; background:transparent; color:var(--muted); cursor:not-allowed; }
-  .btn.primary[aria-disabled="true"] { border-color:var(--line-2); }
-  body.readonly details.more[data-coord] { display:none; }
-  .pill { display:inline-flex; align-items:center; gap:6px; height:24px; padding:0 9px; border:1px solid var(--line-2); border-radius:999px; font:500 11.5px/1 var(--mono); color:var(--text); white-space:nowrap; }
-  .pill::before { content:""; width:7px; height:7px; border-radius:50%; background:var(--faint); }
-  .pill[data-tone=ok]::before { background:var(--green); } .pill[data-tone=warn]::before { background:var(--amber); }
-  .pill[data-tone=bad]::before { background:var(--red); } .pill[data-tone=info]::before { background:var(--blue); }
-  .pill.plain::before { display:none; }
-  .status { align-items:center; gap:8px; }
-  .status .linkbtn { min-height:var(--tap); background:none; border:0; color:var(--text); font:12px var(--mono); text-decoration:underline; text-underline-offset:3px; cursor:pointer; padding:4px; }
+  .num { font-family:var(--mono); font-variant-numeric:tabular-nums; }
+  .skip { position:absolute; left:12px; top:-80px; z-index:50; background:var(--signal); color:var(--signal-ink); padding:12px 16px; font-weight:600; }
+  .skip:focus { top:8px; }
 
-  .viewonly { display:flex; gap:12px; align-items:center; flex-wrap:wrap; padding:10px 20px; background:var(--blue-bg); border-bottom:1px solid var(--line); font-size:13.5px; }
-  .viewonly b { font-weight:600; }
-  .viewonly .btn { padding:4px 12px; }
-  .viewonly .btn.primary { width:auto; padding:4px 14px; }
+  /* ---- top bar ----------------------------------------------------------------------- */
+  .bar { height:var(--bar); display:flex; align-items:center; gap:24px; padding:0 16px; border-bottom:1px solid var(--line); background:var(--bg); }
+  .brand { display:flex; align-items:center; gap:14px; min-width:0; }
+  .brand h1 { margin:0; display:flex; align-items:center; gap:9px; font:600 14px var(--mono); letter-spacing:.16em; }
+  .brand h1::before { content:""; width:10px; height:10px; background:var(--signal); }
+  .brand .where { color:var(--muted); font-size:13px; white-space:nowrap; padding-left:14px; border-left:1px solid var(--line-2); }
+  .modes { display:flex; height:100%; }
+  .mode { background:none; border:0; padding:0 14px; color:var(--muted); font:500 13px var(--sans); cursor:pointer; position:relative; }
+  .mode:hover { color:var(--text); }
+  .mode.on { color:var(--text); }
+  .mode.on::after { content:""; position:absolute; left:14px; right:14px; bottom:-1px; height:2px; background:var(--signal); }
+  .status { margin-left:auto; display:flex; align-items:center; gap:0; font:12px var(--mono); color:var(--muted); white-space:nowrap; }
+  .status > * { padding:0 12px; border-left:1px solid var(--line); line-height:18px; }
+  .status > :first-child { border-left:0; }
+  .status .warn { color:var(--signal); } .status .bad { color:var(--hazard); }
+  #clock { color:var(--text); }
+  .textbtn { background:none; border:0; color:var(--text); font:500 12.5px var(--sans); cursor:pointer; min-height:var(--tap); }
+  .textbtn:hover { color:var(--signal); }
+  .viewonly { display:flex; gap:16px; align-items:center; flex-wrap:wrap; padding:8px 16px; background:var(--signal-bg); border-bottom:1px solid #4a2a10; font-size:13px; }
+  .viewonly b { color:var(--signal); font-weight:600; letter-spacing:.02em; }
+  .viewonly .grow { flex:1; min-width:240px; color:#e2d6cc; }
 
-  #opsbar { grid-column:1 / -1; background:var(--bg); display:flex; gap:14px; align-items:center; flex-wrap:wrap; padding:12px 20px; position:sticky; top:0; z-index:5; border-bottom:1px solid var(--line); }
-  #opsbar .figs2 { display:flex; gap:6px; flex-wrap:wrap; flex:1; min-width:260px; }
-  .chip { display:flex; align-items:baseline; gap:6px; padding:4px 10px; border:1px solid var(--line); border-radius:6px; font-size:12px; color:var(--muted); }
-  .chip b { font:500 16px var(--mono); color:var(--text); }
-  .chip.warn b { color:var(--amber); }
-  #opsbar .act { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
-  #waveWhy { font-size:12.5px; color:var(--muted); max-width:300px; }
-  #opsbar .btn.primary { width:auto; padding:8px 20px; }
-  @media (max-width:767px) { #opsbar .act, #opsbar .btn.primary { width:100%; } #opsbar .btn.primary { justify-content:center; } }
+  /* ---- layout -------------------------------------------------------------------------- */
+  #main { display:grid; grid-template-columns:340px minmax(0,1fr) 340px; min-height:0; }
+  #main:focus { outline:none; }
+  #left, #stage, #side { min-width:0; }
+  .rail { background:var(--panel); min-height:0; overflow:auto; scrollbar-width:thin; scrollbar-color:var(--line-2) transparent; }
+  #left { border-right:1px solid var(--line); display:flex; flex-direction:column; }
+  #side { border-left:1px solid var(--line); }
+  .sec { padding:16px; border-bottom:1px solid var(--line); }
+  .sec-h { display:flex; align-items:baseline; justify-content:space-between; gap:8px; margin:0 0 10px; }
+  .sec-h h2 { margin:0; font:600 13px var(--sans); color:var(--text); }
+  .sec-h .count { font:500 12px var(--mono); color:var(--muted); }
+  .hint { color:var(--muted); font-size:12.5px; margin:0; }
+  body[data-mode="ops"] [data-show="sim"], body[data-mode="sim"] [data-show="ops"] { display:none !important; }
 
-  .sidetabs { display:flex; flex-wrap:wrap; border:1px solid var(--line); border-radius:6px; overflow:hidden; margin-bottom:16px; }
-  .sidetabs button { flex:1; min-height:var(--tap); background:none; border:0; border-right:1px solid var(--line); color:var(--muted); font:500 12px var(--sans); cursor:pointer; padding:6px 4px; white-space:nowrap; }
-  .sidetabs button:last-child { border-right:0; }
-  .sidetabs button[aria-selected="true"] { background:var(--panel); color:var(--text); box-shadow:inset 0 -2px 0 var(--text); }
-  .sidetabs .n { font-family:var(--mono); color:var(--faint); margin-left:3px; }
-  .sidetabs .alert::after { content:""; display:inline-block; width:6px; height:6px; border-radius:50%; background:var(--red); margin-left:4px; vertical-align:2px; }
-  body[data-mode="sim"] .sidetabs { display:none; }
+  /* situation numbers */
+  .situation { display:grid; grid-template-columns:1fr 1fr; border-bottom:1px solid var(--line); }
+  .sn { padding:14px 16px 12px; border-right:1px solid var(--line); border-bottom:1px solid var(--line); }
+  .sn:nth-child(2n) { border-right:0; } .sn:nth-last-child(-n+2) { border-bottom:0; }
+  .sn b { display:block; font:500 30px/1.05 var(--mono); font-variant-numeric:tabular-nums; letter-spacing:-.02em; }
+  .sn span { font-size:12px; color:var(--muted); }
+  .sn.signal b { color:var(--signal); }
+
+  /* composer */
+  details.composer > summary { list-style:none; cursor:pointer; display:flex; justify-content:space-between; align-items:center; min-height:var(--tap); font:600 13px var(--sans); }
+  details.composer > summary::-webkit-details-marker { display:none; }
+  details.composer > summary::after { content:"+"; font:400 18px var(--mono); color:var(--muted); }
+  details.composer[open] > summary::after { content:"–"; }
+  .samples { display:flex; gap:6px; flex-wrap:wrap; align-items:center; margin:8px 0; font-size:12px; color:var(--muted); }
+  .sample { background:none; border:1px solid var(--line-2); color:var(--muted); padding:0 10px; min-height:28px; font-size:12px; cursor:pointer; }
+  .sample:hover { color:var(--text); border-color:var(--muted); }
+  textarea { width:100%; min-height:96px; resize:vertical; background:var(--bg); border:1px solid var(--line-2); padding:10px; line-height:1.45; border-radius:0; }
+  textarea:focus { border-color:var(--signal); }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:8px; }
+  #attached { font:12px var(--mono); color:var(--muted); margin-top:6px; min-height:16px; }
+  #attached a { color:var(--text); margin-left:8px; cursor:pointer; text-decoration:underline; }
+  .check { display:flex; gap:8px; align-items:flex-start; font-size:13px; margin:12px 0; cursor:pointer; }
+  .check input { margin-top:3px; accent-color:var(--signal); }
+
+  /* buttons: square, quiet; one signal-orange primary per screen */
+  .btn { display:inline-flex; align-items:center; justify-content:center; gap:6px; min-height:var(--tap); padding:0 12px; border-radius:2px;
+         background:var(--panel-2); border:1px solid var(--line-2); color:var(--text); font:500 13px var(--sans); cursor:pointer;
+         transition:background-color .15s ease-out, border-color .15s ease-out, color .15s ease-out; }
+  .btn:hover { background:#1c222a; border-color:#3a434f; }
+  a.btn { text-decoration:none; }
+  .btn:active:not(:disabled):not([aria-disabled="true"]) { transform:translateY(1px); }
+  .btn:disabled { opacity:.5; cursor:progress; }
+  .btn.block { width:100%; }
+  .btn.signal { background:var(--signal); border-color:var(--signal); color:var(--signal-ink); font-weight:700; letter-spacing:.02em; min-height:46px; font-size:14px; }
+  .btn.signal:hover { background:#ff8d3a; }
+  .btn.danger { color:var(--hazard); border-color:#4a2422; background:transparent; }
+  .btn.danger:hover { background:#24100f; }
+  .btn.sm { min-height:28px; padding:0 9px; font-size:12px; }
+  .btn[aria-disabled="true"] { opacity:.45; cursor:not-allowed; }
+  .btn .rec { width:8px; height:8px; background:var(--hazard); }
+  label.btn:focus-within { outline:2px solid var(--signal); outline-offset:2px; }
+
+  /* incidents */
+  #queueSec { flex:1; }
+  .grouphead { font:500 12px var(--sans); color:var(--muted); margin:14px 0 4px; display:flex; justify-content:space-between; }
+  .grouphead:first-child { margin-top:0; }
+  .inc { display:grid; grid-template-columns:3px 1fr; gap:12px; padding:10px 0; border-bottom:1px solid var(--line); }
+  .inc:last-child { border-bottom:0; }
+  .urgbar { background:var(--line-2); }
+  .inc[data-status="waiting"] .urgbar { background:var(--signal); opacity:calc(.35 + var(--u) * .13); }
+  .inc[data-status="en_route"] .urgbar { background:var(--enroute); }
+  .inc[data-status="delivered"] .urgbar { background:var(--road); opacity:.6; }
+  .inc-l1 { display:flex; justify-content:space-between; align-items:baseline; gap:8px; }
+  .inc-l1 b { font-size:15px; font-weight:600; }
+  .ist { font:500 12px var(--mono); color:var(--muted); white-space:nowrap; }
+  .ist.wait { color:var(--text); } .ist.late { color:var(--signal); } .ist.bad { color:var(--hazard); font-weight:600; }
+  .ist.road { color:var(--enroute); } .ist.done { color:var(--road); }
+  .inc-l2 { font-size:13px; color:var(--text); }
+  .inc-l2 .hi { color:var(--signal); }
+  .inc-l3 { font-size:12px; color:var(--muted); margin-top:2px; }
+  .inc .closebtn { margin-top:6px; }
+  details.donegroup > summary { cursor:pointer; font:500 12px var(--sans); color:var(--muted); margin:14px 0 4px; min-height:var(--tap); display:flex; align-items:center; }
+  .empty-state { color:var(--muted); font-size:13px; }
+  .empty-state b { color:var(--text); }
+  .empty-state ol { list-style:none; counter-reset:s; margin:10px 0 12px; padding:0; }
+  .empty-state li { counter-increment:s; display:grid; grid-template-columns:24px 1fr; margin:8px 0; }
+  .empty-state li::before { content:counter(s); font:600 12px var(--mono); color:var(--signal); }
+  .skel { height:54px; background:var(--panel-2); margin:6px 0; animation:pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity:.45; } }
+
+  /* dispatch dock */
+  .dispatch { position:sticky; bottom:0; background:var(--panel); border-top:1px solid var(--line-2); padding:12px 16px 14px; }
+  #waveWhy { font:12px var(--mono); color:var(--muted); margin-bottom:8px; }
+  #waveWhy.go { color:var(--text); }
+  .dispatch .row .btn { flex:1; }
+
+  /* ---- stage: map + agent log ---------------------------------------------------------- */
+  #stage { display:grid; grid-template-rows:minmax(0,1fr) auto; grid-template-columns:minmax(0,1fr); min-height:0; background:#06080a; }
+  #mapwrap { position:relative; min-height:0; overflow:hidden; }
+  #map { position:absolute; inset:0; width:100%; height:100%; display:block; }
+  #mapwrap.picking #map { cursor:crosshair; }
+  #stage.busy #mapwrap::before { content:""; position:absolute; left:0; top:0; height:2px; width:30%; background:var(--signal); z-index:3; animation:scan 1.1s ease-in-out infinite; }
+  @keyframes scan { 0% { left:-30%; } 100% { left:100%; } }
+  .legend { position:absolute; left:12px; top:12px; z-index:2; display:grid; gap:4px; padding:10px 12px; background:#0a0c0fe6; border:1px solid var(--line); font-size:12px; color:var(--muted); }
+  .legend span { display:flex; align-items:center; gap:8px; }
+  .legend svg { flex:none; }
+  .flow { animation:flow 1.4s linear infinite; }
+  @keyframes flow { to { stroke-dashoffset:-32; } }
+
+  #logpanel { border-top:1px solid var(--line-2); background:var(--bg); display:grid; grid-template-rows:auto minmax(0,1fr); grid-template-columns:minmax(0,1fr); min-width:0; max-height:172px; }
+  #logpanel.open { max-height:46vh; }
+  .loghead { display:flex; align-items:center; gap:12px; padding:0 12px 0 16px; height:36px; border-bottom:1px solid var(--line); }
+  .loghead h2 { margin:0; font:600 13px var(--sans); }
+  .loghead .hint { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #log { overflow:auto; min-height:0; scrollbar-width:thin; scrollbar-color:var(--line-2) transparent; }
+  .evgroup { border-bottom:1px solid var(--line); padding:4px 0; }
+  .ev { display:grid; grid-template-columns:64px 84px minmax(0,1fr); gap:10px; padding:4px 16px; font-size:13px; align-items:baseline; }
+  .ev time { font:12px var(--mono); color:var(--faint); }
+  .ev .sub { color:var(--muted); }
+  .tag { font:600 11px var(--mono); letter-spacing:.06em; color:var(--muted); }
+  .tag.intake { color:var(--enroute); } .tag.alert, .tag.bad { color:var(--hazard); } .tag.heal { color:var(--signal); }
+  .tag.good, .tag.lesson { color:var(--road); }
+  .empty { padding:12px 16px; color:var(--muted); font-size:13px; }
+
+  /* ---- right rail ---------------------------------------------------------------------- */
+  .sidetabs { display:flex; border-bottom:1px solid var(--line); position:sticky; top:0; background:var(--panel); z-index:2; overflow-x:auto; }
+  .sidetabs button { flex:1 1 auto; background:none; border:0; padding:0 6px; min-height:44px; color:var(--muted); font:500 12px var(--sans); cursor:pointer; position:relative; white-space:nowrap; }
+  .sidetabs button:hover { color:var(--text); }
+  .sidetabs button[aria-selected="true"] { color:var(--text); }
+  .sidetabs button[aria-selected="true"]::after { content:""; position:absolute; left:8px; right:8px; bottom:-1px; height:2px; background:var(--text); }
+  .sidetabs .n { font-family:var(--mono); margin-left:4px; color:var(--faint); }
+  .sidetabs .alert .n { color:var(--signal); }
   body[data-mode="ops"] #side [data-pane].off { display:none; }
-  body[data-mode="ops"] #side [data-pane] + [data-pane] { margin-top:0; padding-top:0; border-top:0; }
 
-  .inc .pill { height:20px; font-size:10.5px; }
-  .inc .wait[data-late=warn] { color:var(--amber); } .inc .wait[data-late=bad] { color:var(--red); font-weight:600; }
-  .urg.hi { color:var(--red); }
-  .grouphead { font:500 10.5px var(--mono); letter-spacing:.06em; text-transform:uppercase; color:var(--faint); margin:12px 0 2px; }
-  details.donegroup summary { cursor:pointer; font:500 10.5px var(--mono); letter-spacing:.06em; text-transform:uppercase; color:var(--faint); margin:12px 0 2px; min-height:24px; }
-  .empty-state { border:1px dashed var(--line-2); border-radius:6px; padding:14px; color:var(--muted); font-size:13px; }
-  .empty-state b { color:var(--text); font-weight:600; }
-  .empty-state ol { margin:8px 0 10px; padding-left:20px; } .empty-state li { margin:4px 0; }
-  .skel { height:48px; border-radius:4px; background:var(--panel); margin:5px 0; animation:pulse 1.4s ease-in-out infinite; }
-  .truck-alert { box-shadow:inset 3px 0 var(--red); padding-left:8px !important; }
-  td .lowtag { font-size:9.5px; margin-left:2px; }
+  .rowlist > div { display:flex; justify-content:space-between; gap:10px; align-items:flex-start; padding:10px 0; border-bottom:1px solid var(--line); font-size:13px; }
+  .rowlist > div:last-child { border-bottom:0; }
+  .rowlist .sub { color:var(--muted); font-size:12px; margin-top:2px; }
+  .rowlist .acts { display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end; }
+  .truck-id { font:600 13px var(--mono); }
+  .st { font:500 12px var(--sans); margin-left:8px; }
+  .st.idle { color:var(--road); } .st.on_route { color:var(--enroute); } .st.out_of_service { color:var(--faint); }
+  .truck-alert { box-shadow:inset 3px 0 var(--hazard); padding-left:10px !important; }
+  table.stock { width:100%; border-collapse:collapse; font-size:13px; }
+  table.stock th { font:500 11.5px var(--sans); color:var(--muted); text-align:right; padding:6px 0 6px 6px; border-bottom:1px solid var(--line-2); text-transform:capitalize; }
+  table.stock th:first-child, table.stock td:first-child { text-align:left; padding-left:0; }
+  table.stock td { padding:8px 0 8px 6px; border-bottom:1px solid var(--line); text-align:right; font-family:var(--mono); font-variant-numeric:tabular-nums; }
+  table.stock td:first-child { font-family:var(--sans); }
+  table.stock td.low { color:var(--signal); font-weight:600; }
+  .mini { display:grid; grid-template-columns:repeat(auto-fit, minmax(84px, 1fr)); gap:6px; margin-top:10px; }
+  .mini input, .mini select { width:100%; min-width:0; min-height:var(--tap); background:var(--bg); border:1px solid var(--line-2); padding:0 8px; font-size:13px; border-radius:0; }
+  details.more { margin-top:12px; font-size:13px; border-top:1px solid var(--line); }
+  details.more summary { cursor:pointer; color:var(--text); min-height:40px; display:flex; align-items:center; font-weight:500; }
+  details.more summary::marker { color:var(--faint); }
+  body.readonly details.more[data-coord] { display:none; }
+  .figs { display:grid; grid-template-columns:1fr 1fr; border:1px solid var(--line); margin-bottom:12px; }
+  .figs div { padding:10px 12px; border-right:1px solid var(--line); border-bottom:1px solid var(--line); }
+  .figs div:nth-child(2n) { border-right:0; } .figs div:nth-last-child(-n+2) { border-bottom:0; }
+  .figs b { display:block; font:500 20px/1.2 var(--mono); }
+  .figs span { font-size:12px; color:var(--muted); }
+  .activity { font-size:12.5px; }
+  .activity div { padding:6px 0; border-bottom:1px solid var(--line); }
+  .activity time { font-family:var(--mono); color:var(--faint); margin-right:8px; }
+  ol.lessons { margin:0; padding-left:20px; font-size:13px; }
+  ol.lessons li { margin:8px 0; } ol.lessons li::marker { font-family:var(--mono); color:var(--faint); }
 
-  .evgroup { border-bottom:1px solid var(--line-2); }
-  .evgroup:last-child { border-bottom:0; }
-  .toasts { position:fixed; right:16px; bottom:16px; display:grid; gap:8px; z-index:20; max-width:min(380px, calc(100vw - 32px)); }
-  .toast { display:flex; gap:12px; align-items:center; background:var(--panel); border:1px solid var(--line-2); border-left:3px solid var(--blue); border-radius:6px; padding:8px 10px 8px 12px; font-size:13px; box-shadow:0 8px 24px #0006; }
+  /* simulator panels */
+  .kpis { display:grid; grid-template-columns:1fr 1fr; border:1px solid var(--line); margin-bottom:12px; }
+  .kpi { padding:10px 12px; border-right:1px solid var(--line); border-bottom:1px solid var(--line); }
+  .kpi:nth-child(2n) { border-right:0; } .kpi:nth-last-child(-n+2) { border-bottom:0; }
+  .kpi b { display:block; font:500 22px/1.2 var(--mono); }
+  .kpi span { font-size:12px; color:var(--muted); }
+  .up { color:var(--road); } .down { color:var(--signal); }
+  .chart { border:1px solid var(--line); background:var(--bg); }
+  .chart svg { display:block; width:100%; height:auto; }
+  .pol { display:grid; grid-template-columns:104px 1fr 42px 26px; gap:8px; align-items:center; font-size:12.5px; padding:6px 0; border-bottom:1px solid var(--line); }
+  .pol .name { font-family:var(--mono); }
+  .pol .bar { height:4px; background:var(--panel-2); overflow:hidden; }
+  .pol .bar i { display:block; height:100%; background:var(--line-2); }
+  .pol.best .name { color:var(--road); } .pol.best .bar i { background:var(--road); }
+  .pol .runs { color:var(--muted); text-align:right; font-family:var(--mono); }
+  .polhead { color:var(--muted); font-size:11.5px; }
+
+  /* dialogs and toasts */
+  dialog { background:var(--panel); color:var(--text); border:1px solid var(--line-2); border-radius:0; padding:0; width:min(680px, 92vw); }
+  dialog::backdrop { background:#000b; }
+  dialog .dhead { display:flex; justify-content:space-between; align-items:center; padding:14px 18px; border-bottom:1px solid var(--line); }
+  dialog .dhead h2 { margin:0; font:600 15px var(--sans); }
+  dialog pre { margin:0; padding:18px; max-height:60vh; overflow:auto; white-space:pre-wrap; font:13px/1.6 var(--mono); }
+  dialog .dfoot { display:flex; gap:8px; justify-content:flex-end; padding:12px 18px; border-top:1px solid var(--line); }
+  #howDlg ol { list-style:none; counter-reset:s; margin:0; padding:18px; }
+  #howDlg li { counter-increment:s; display:grid; grid-template-columns:32px 1fr; margin:0 0 14px; line-height:1.55; }
+  #howDlg li::before { content:counter(s, decimal-leading-zero); font:600 13px var(--mono); color:var(--signal); padding-top:1px; }
+  .toasts { position:fixed; right:16px; bottom:16px; display:grid; gap:8px; z-index:40; max-width:min(400px, calc(100vw - 32px)); }
+  .toast { display:flex; gap:12px; align-items:center; background:var(--panel-2); border:1px solid var(--line-2); border-left:3px solid var(--enroute); padding:10px 10px 10px 14px; font-size:13px; box-shadow:0 12px 32px #000a; }
   .toast span { flex:1; }
-  .toast[data-tone=bad] { border-left-color:var(--red); } .toast[data-tone=ok] { border-left-color:var(--green); }
-  .toast .btn { padding:2px 10px; }
-  #howDlg ol { margin:0; padding:16px 16px 16px 36px; line-height:1.6; } #howDlg li { margin:6px 0; }
+  .toast[data-tone=bad] { border-left-color:var(--hazard); } .toast[data-tone=ok] { border-left-color:var(--road); }
+
+  /* ---- responsive ---------------------------------------------------------------------- */
+  @media (max-width:1279px) { #main { grid-template-columns:300px minmax(0,1fr) 300px; } .brand .where { display:none; } }
+  @media (max-width:999px) {
+    body { display:block; height:auto; overflow:auto; }
+    #main { display:flex; flex-direction:column; }
+    .rail { overflow:visible; }
+    #left, #side { border:0; }
+    #stage { height:auto; }
+    #mapwrap { height:62vh; min-height:360px; }
+    #logpanel { max-height:none; } #logpanel #log { max-height:240px; }
+    .bar { flex-wrap:wrap; height:auto; padding:8px 12px; gap:8px 16px; }
+    .modes { height:44px; }
+    .status { margin-left:0; width:100%; flex-wrap:wrap; row-gap:4px; white-space:normal; }
+    .status > :first-child { padding-left:0; }
+  }
+  @media (max-width:767px) {
+    :root { --tap:44px; }
+    input, select, textarea { font-size:16px !important; }
+    .btn.sm { min-height:44px; min-width:44px; }
+    .sample { min-height:44px; }
+    .modes { height:44px; } .mode { min-height:44px; }
+    details.more summary { min-height:44px; }
+    .ev { grid-template-columns:54px 74px minmax(0,1fr); padding:4px 12px; }
+  }
 </style>
 </head>
-<body>
+<body data-mode="ops">
 <a class="skip" href="#main">Skip to the operation</a>
-<header>
-  <div class="brand"><h1>ReliefRoute</h1><span>Flood-relief dispatch agent · Chennai</span></div>
+<header class="bar">
+  <div class="brand"><h1>RELIEFROUTE</h1><span class="where">Chennai flood operation</span></div>
+  <nav class="modes" role="tablist" aria-label="View">
+    <button class="mode" role="tab" data-mode="ops">Operations</button>
+    <button class="mode" role="tab" data-mode="sim">Simulator</button>
+  </nav>
   <div class="status">
-    <button class="linkbtn" id="howBtn" type="button">How it works</button>
-    <span class="pill" id="sync" data-show="ops" title="When the console last got fresh data from the server">Connecting…</span>
-    <span id="ai" class="pill">Gemini · checking</span>
-    <span class="pill" data-tone="info" title="MCP Streamable HTTP endpoint: other agents can call ReliefRoute's tools at /mcp">MCP /mcp</span>
+    <span id="clock" class="num" aria-label="Time in Chennai"></span>
+    <span id="sync" data-show="ops">Connecting</span>
+    <span id="ai">AI checking</span>
+    <button class="textbtn" id="howBtn" type="button">How it works</button>
     <span id="who"></span>
   </div>
 </header>
 <div class="viewonly" id="viewonly" role="status" hidden>
-  <span><b>View only.</b> You are watching the live operation. Dispatching and managing trucks needs a coordinator sign-in.</span>
-  <span>You can still send a report here or from <a href="/report" target="_blank" style="color:var(--text)">/report</a>, or play the whole loop yourself in the Simulator.</span>
-  <button class="btn" type="button" id="tryIt">Try the simulator</button>
-  <button class="btn primary" type="button" id="vSignIn">Coordinator sign-in</button>
+  <b>VIEW ONLY</b>
+  <span class="grow">You are watching the live operation. Dispatching needs a coordinator sign-in. Anyone can send a report here or from <a href="/report" target="_blank" style="color:var(--text)">/report</a>, or run the whole loop in the Simulator.</span>
+  <button class="btn sm" type="button" id="tryIt">Open the simulator</button>
+  <button class="btn sm" type="button" id="vSignIn">Coordinator sign-in</button>
 </div>
+
 <main id="main" tabindex="-1">
-  <div id="opsbar" data-show="ops">
-    <div class="figs2" id="opsfig" aria-live="polite"></div>
-    <div class="act">
-      <span id="waveWhy"></span>
-      <button class="btn" id="sitrep" data-coord>Situation report</button>
-      <button class="btn primary" id="wave" data-coord>Dispatch wave</button>
+  <aside class="rail" id="left" aria-label="Situation and incidents">
+    <div class="situation" id="sitNums" data-show="ops" aria-live="polite">
+      <div class="sn"><b>–</b><span>Waiting</span></div><div class="sn"><b>–</b><span>On the road</span></div>
+      <div class="sn"><b>–</b><span>Units delivered</span></div><div class="sn"><b>–</b><span>Longest wait, min</span></div>
     </div>
-  </div>
-  <section id="colLeft">
-    <div class="modes" role="tablist">
-      <button class="mode" role="tab" data-mode="ops">Operations</button>
-      <button class="mode" role="tab" data-mode="sim">Simulator</button>
+
+    <div class="sec">
+      <details class="composer" id="composer" open>
+        <summary>New field report</summary>
+        <div class="samples"><span>Samples</span>
+          <button class="sample" type="button" data-t="Velachery la 120 families maadila maatikittaanga, kudika thanni and medicine urgent-a venum. Saidapet bridge road flooded.">Tanglish</button>
+          <button class="sample" type="button" data-t="அடையாறு பகுதியில் 200 பேருக்கு குடிநீர் தேவை. மருத்துவமனையில் மருந்துகள் தீர்ந்துவிட்டன, அவசரம்!">Tamil</button>
+          <button class="sample" type="button" data-t="पेरम्बूर में 80 लोग फंसे हैं, खाना और कंबल चाहिए। बच्चे और बुज़ुर्ग भी हैं, जल्दी भेजिए।">Hindi</button>
+          <button class="sample" type="button" data-t="Royapuram relief camp: 150 people need food packets and blankets tonight. Ennore road is underwater.">English</button>
+        </div>
+        <label for="text" class="sr-only">Field report text, any language</label>
+        <textarea id="text" placeholder="What is needed, how many people, where. Any language. Attach a photo or a voice note if you have one."></textarea>
+        <div class="row">
+          <label class="btn sm"><input type="file" id="image" accept="image/*" class="sr-only">Photo</label>
+          <label class="btn sm"><input type="file" id="audio" accept="audio/*" class="sr-only">Audio</label>
+          <button class="btn sm" id="rec" type="button">Record</button>
+        </div>
+        <div id="attached"></div>
+        <div data-show="ops">
+          <button class="btn block" id="queue" style="margin-top:10px">Add to incident queue</button>
+          <p class="hint" style="margin-top:8px">Field teams report from a phone at <a href="/report" target="_blank" class="num" style="color:var(--text)">/report</a>.</p>
+        </div>
+        <div data-show="sim">
+          <label class="check"><input type="checkbox" id="chaos" checked><span>Collapse a bridge mid-delivery<br><span class="hint">Tests whether the agent notices and reroutes.</span></span></label>
+          <button class="btn signal block" id="go">Run full episode</button>
+          <p class="hint" style="margin-top:8px">Plays this report in a fresh simulated flood with other open requests, then scores and learns.</p>
+        </div>
+      </details>
     </div>
-    <div class="block">
-      <h2>Field report</h2>
-      <div class="samples"><span>Try a sample report</span>
-        <button class="tab" data-t="Velachery la 120 families maadila maatikittaanga, kudika thanni and medicine urgent-a venum. Saidapet bridge road flooded.">Tanglish</button>
-        <button class="tab" data-t="அடையாறு பகுதியில் 200 பேருக்கு குடிநீர் தேவை. மருத்துவமனையில் மருந்துகள் தீர்ந்துவிட்டன, அவசரம்!">Tamil</button>
-        <button class="tab" data-t="पेरम्बूर में 80 लोग फंसे हैं, खाना और कंबल चाहिए। बच्चे और बुज़ुर्ग भी हैं, जल्दी भेजिए।">Hindi</button>
-        <button class="tab" data-t="Royapuram relief camp: 150 people need food packets and blankets tonight. Ennore road is underwater.">English</button>
-      </div>
-      <label for="text" class="sr-only">Field report text, any language</label>
-      <textarea id="text" placeholder="Type or paste a report in any language. You can also attach a photo or a voice note."></textarea>
-      <div class="row">
-        <label class="btn"><input type="file" id="image" accept="image/*" class="sr-only">Photo</label>
-        <label class="btn"><input type="file" id="audio" accept="audio/*" class="sr-only">Audio file</label>
-        <button class="btn" id="rec" type="button">Record</button>
-      </div>
-      <div id="attached"></div>
-      <div data-show="ops">
-        <button class="btn block" id="queue" style="margin-top:14px">Add to incident queue</button>
-        <p class="hint" style="margin-top:8px">Field workers report from a phone at <a href="/report" target="_blank" class="num" style="color:var(--text)">/report</a>. Their reports appear in the queue below within 5 seconds.</p>
-      </div>
-      <div data-show="sim">
-        <label class="check"><input type="checkbox" id="chaos" checked><span>Simulate a road collapse during delivery<br><span class="hint">Tests whether the agent detects the failure and reroutes.</span></span></label>
-        <button class="btn primary" id="go">Run full episode</button>
-        <p class="hint" style="margin-top:8px">Plays this report inside a fresh simulated scenario with other open requests, then scores and learns.</p>
-      </div>
-    </div>
-    <div class="block" data-show="ops">
-      <h2>Incident queue</h2>
+
+    <div class="sec" id="queueSec" data-show="ops">
+      <div class="sec-h"><h2>Incidents</h2><span class="count" id="queueCount"></span></div>
       <div id="queueList" aria-busy="true"><div class="skel"></div><div class="skel"></div><div class="skel"></div></div>
-      <div class="row" style="margin-top:22px">
+    </div>
+
+    <div class="sec" data-show="sim">
+      <div class="sec-h"><h2>Training</h2></div>
+      <p class="hint">Plays simulated floods in the OpenEnv environment. Every run is scored; the bandit and the lesson memory update. <span class="num">rl_policy</span> is the neural policy trained with reinforcement learning.</p>
+      <div class="row">
+        <button class="btn signal" id="train" style="flex:1">Run 5 episodes</button>
+        <button class="btn danger" id="reset" data-coord>Reset memory</button>
+      </div>
+    </div>
+
+    <div class="dispatch" data-show="ops">
+      <div id="waveWhy" aria-live="polite"></div>
+      <button class="btn signal block" id="wave" data-coord>Dispatch wave</button>
+      <div class="row">
+        <button class="btn" id="sitrep" data-coord>Situation report</button>
         <button class="btn danger" id="opsReset" data-coord>New operation…</button>
       </div>
     </div>
-    <div class="block" data-show="sim">
-      <h2>Training</h2>
-      <p class="hint">Plays simulated flood scenarios in the OpenEnv environment. Every run is scored; the bandit and the lesson memory update. <span class="num">rl_policy</span> is a neural policy trained offline with reinforcement learning (PyTorch).</p>
-      <div class="row">
-        <button class="btn" id="train">Run 5 episodes</button>
-        <button class="btn" id="reset" data-coord>Reset memory</button>
+  </aside>
+
+  <section id="stage" aria-label="Map and agent log">
+    <div id="mapwrap">
+      <div class="legend" aria-label="Map legend">
+        <span data-show="ops"><svg width="12" height="12"><circle cx="6" cy="6" r="5" fill="#ff7a1a"/></svg>Waiting for relief</span>
+        <span data-show="ops"><svg width="12" height="12"><circle cx="6" cy="6" r="4.5" fill="none" stroke="#6ea8fe" stroke-width="2"/></svg>On the road</span>
+        <span data-show="sim"><svg width="12" height="12"><circle cx="6" cy="6" r="5" fill="#ff7a1a"/></svg>Your report</span>
+        <span data-show="sim"><svg width="12" height="12"><circle cx="6" cy="6" r="5" fill="#c9ced4"/></svg>Other requests</span>
+        <span><svg width="20" height="12"><line x1="0" y1="6" x2="20" y2="6" stroke="#3ddc97" stroke-width="3"/></svg>Truck route</span>
+        <span><svg width="12" height="12"><rect x="1" y="1" width="10" height="10" fill="#e9e7e3"/></svg>Depot</span>
+        <span><svg width="14" height="14"><defs><pattern id="lh" width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="4" stroke="#ff5a52" stroke-width="1.5"/></pattern></defs><circle cx="7" cy="7" r="6" fill="url(#lh)" stroke="#ff5a52"/></svg>Flooded or blocked</span>
       </div>
+      <svg id="map" role="img" aria-label="Map of Chennai with depots, requests, truck routes and flooded roads"></svg>
+    </div>
+    <div id="logpanel">
+      <div class="loghead">
+        <h2>Agent log</h2>
+        <span class="hint" id="logLatest">Every step the agent takes appears here, newest first.</span>
+        <button class="btn sm" id="logToggle" type="button" aria-expanded="false" aria-controls="log">Expand</button>
+      </div>
+      <div id="log" role="log" aria-live="polite" aria-label="Agent log, newest first"><div class="empty">Nothing yet. Add a report and dispatch, or run training in the Simulator.</div></div>
     </div>
   </section>
 
-  <section>
-    <h2>Pipeline</h2>
-    <div class="pipe" id="pipe">
-      <div><i>1</i>Understand</div><div><i>2</i>Plan</div><div><i>3</i>Dispatch</div><div><i>4</i>Disruption</div>
-      <div class="heal"><i>5</i>Self-heal</div><div><i>6</i>Score</div><div class="learn"><i>7</i>Learn</div>
-    </div>
-    <div class="maphead">
-      <h2>Operations map</h2>
-      <div class="legend">
-        <span><svg width="10" height="10"><rect width="10" height="10" fill="#e7e5e2"/></svg>Depot</span>
-        <span data-show="sim"><svg width="10" height="10"><circle cx="5" cy="5" r="4" fill="#7a9cc6"/></svg>Open request</span>
-        <span data-show="sim"><svg width="10" height="10"><circle cx="5" cy="5" r="4" fill="#e3a33b"/></svg>Field report</span>
-        <span data-show="sim"><svg width="18" height="6"><line x1="0" y1="3" x2="18" y2="3" stroke="#5fb37f" stroke-width="2"/></svg>Truck leg</span>
-        <span data-show="sim"><svg width="18" height="6"><line x1="0" y1="3" x2="18" y2="3" stroke="#5fb37f" stroke-width="2" stroke-dasharray="5 3"/></svg>Detour</span>
-        <span data-show="sim"><svg width="18" height="6"><line x1="0" y1="3" x2="18" y2="3" stroke="#e0574f" stroke-width="2" stroke-dasharray="2 3"/></svg>Blocked</span>
-        <span data-show="ops"><svg width="10" height="10"><circle cx="5" cy="5" r="4" fill="#e3a33b"/></svg>Waiting</span>
-        <span data-show="ops"><svg width="10" height="10"><circle cx="5" cy="5" r="4" fill="#7a9cc6"/></svg>On a truck</span>
-        <span data-show="ops"><svg width="10" height="10"><circle cx="5" cy="5" r="3" fill="#5fb37f"/></svg>Delivered</span>
-        <span data-show="ops"><svg width="18" height="6"><line x1="0" y1="3" x2="18" y2="3" stroke="#5fb37f" stroke-width="2.5"/></svg>Road route</span>
-        <span><svg width="10" height="10"><circle cx="5" cy="5" r="4.5" fill="#e0574f33" stroke="#e0574f"/></svg>Flooded / blocked</span>
-      </div>
-    </div>
-    <div class="map"><svg id="map" viewBox="0 0 600 560" role="img" aria-label="Map of Chennai with depots, requests and routes"></svg></div>
-    <h2 style="margin-top:18px">Event log</h2>
-    <div class="log" id="log" role="log" aria-live="polite" aria-label="Event log, newest first"><div class="empty">No activity yet. Choose a sample report and dispatch, or run training.</div></div>
-  </section>
-
-  <section id="side">
-    <div class="sidetabs" role="tablist" aria-label="Resources">
+  <aside class="rail" id="side" aria-label="Resources and learning">
+    <div class="sidetabs" role="tablist" aria-label="Resources" data-show="ops">
       <button role="tab" data-tab="fleet" aria-selected="true">Fleet<span class="n" id="nFleet"></span></button>
       <button role="tab" data-tab="stock" aria-selected="false">Depots<span class="n" id="nStock"></span></button>
       <button role="tab" data-tab="hazards" aria-selected="false">Hazards<span class="n" id="nHaz"></span></button>
       <button role="tab" data-tab="learning" aria-selected="false">Learning</button>
       <button role="tab" data-tab="activity" aria-selected="false">Activity</button>
     </div>
-    <div class="block" data-show="ops" data-pane="fleet" role="tabpanel">
-      <h2>Fleet</h2>
+    <div class="sec" data-show="ops" data-pane="fleet" role="tabpanel">
+      <div class="sec-h"><h2>Trucks</h2><span class="count">driver links</span></div>
       <div class="rowlist" id="fleet"></div>
       <details class="more" data-coord><summary>Add a truck</summary>
         <div class="mini"><select id="truckDepot" aria-label="Depot"></select>
@@ -345,10 +394,9 @@
           <button class="btn" id="addTruck">Add truck</button></div>
       </details>
     </div>
-    <div class="block off" data-show="ops" data-pane="stock" role="tabpanel">
-      <h2>Depots and stock</h2>
+    <div class="sec off" data-show="ops" data-pane="stock" role="tabpanel">
+      <div class="sec-h"><h2>Stock by depot</h2><span class="count">orange = under 100</span></div>
       <table class="stock" id="stock"></table>
-      <p class="hint" style="margin-top:6px">Amber numbers are below 100 units.</p>
       <details class="more" data-coord><summary>Log incoming supplies</summary>
         <div class="mini"><select id="rsDepot" aria-label="Depot"></select>
           <select id="rsItem" aria-label="Item"><option>water</option><option>food</option><option>medicine</option><option>blankets</option></select>
@@ -363,22 +411,22 @@
         <p class="hint" id="pickHint" style="margin-top:6px">Choose “Pick on map”, then click where the depot is.</p>
       </details>
     </div>
-    <div class="block off" data-show="ops" data-pane="hazards" role="tabpanel">
-      <h2>Road hazards</h2>
+    <div class="sec off" data-show="ops" data-pane="hazards" role="tabpanel">
+      <div class="sec-h"><h2>Road hazards</h2></div>
       <div class="rowlist" id="hazards"></div>
     </div>
-    <div class="block off" data-show="ops" data-pane="learning" role="tabpanel">
-      <h2>Learning from the field</h2>
+    <div class="sec off" data-show="ops" data-pane="learning" role="tabpanel">
+      <div class="sec-h"><h2>Learning from the field</h2></div>
       <div class="figs" id="fieldFigs"></div>
       <div class="rowlist" id="fieldStrat"></div>
-      <p class="hint" style="margin-top:6px">Every closed route is scored on what drivers actually delivered. Arrival times correct future ETAs; failed and blocked stops become lessons.</p>
+      <p class="hint" style="margin-top:8px">Every closed route is scored on what drivers actually delivered. Arrival times correct future ETAs; failed and blocked stops become lessons.</p>
     </div>
-    <div class="block off" data-show="ops" data-pane="activity" role="tabpanel">
-      <h2>Activity</h2>
+    <div class="sec off" data-show="ops" data-pane="activity" role="tabpanel">
+      <div class="sec-h"><h2>Activity</h2><span class="count">who did what</span></div>
       <div class="activity" id="activity"></div>
     </div>
-    <div class="block" data-show="sim">
-      <h2>Performance</h2>
+    <div class="sec" data-show="sim">
+      <div class="sec-h"><h2>Performance</h2></div>
       <div class="kpis">
         <div class="kpi"><b id="k-last">–</b><span>Last score</span></div>
         <div class="kpi"><b id="k-avg">–</b><span>Average, last 5</span></div>
@@ -386,33 +434,33 @@
         <div class="kpi"><b id="k-delta">–</b><span>Change vs first 5</span></div>
       </div>
       <div class="chart"><svg id="chart" viewBox="0 0 320 150" role="img" aria-label="Score per episode"></svg></div>
-      <p class="hint" style="margin-top:6px">Score = share of the best possible outcome. Dots: each episode. Line: 5-episode average.</p>
+      <p class="hint" style="margin-top:6px">Score = share of the best possible outcome. Dots: episodes. Line: 5-episode average.</p>
     </div>
-    <div class="block" data-show="sim">
-      <h2>Policy · bandit</h2>
+    <div class="sec" data-show="sim">
+      <div class="sec-h"><h2>Strategies</h2><span class="count">bandit</span></div>
       <div id="bandit"></div>
       <p class="hint" style="margin-top:8px">Mostly uses the best-scoring strategy, tries the others 20% of the time.</p>
     </div>
-    <div class="block off" data-pane="learning">
-      <h2>Lessons in memory</h2>
+    <div class="sec off" data-pane="learning">
+      <div class="sec-h"><h2>Lessons in memory</h2></div>
       <ol class="lessons" id="lessons"></ol>
     </div>
-  </section>
+  </aside>
 </main>
+
 <dialog id="howDlg" aria-labelledby="howTitle">
-  <div class="dhead"><h2 id="howTitle" style="margin:0">How ReliefRoute works</h2></div>
+  <div class="dhead"><h2 id="howTitle">How ReliefRoute works</h2></div>
   <ol>
-    <li><b>Report.</b> Field workers send text, a photo or a voice note in any language from <span class="num">/report</span>. Gemini turns it into requests: place, item, quantity, urgency. The same need reported twice becomes one request.</li>
-    <li><b>Plan.</b> A coordinator clicks <b>Dispatch wave</b>. The agent assigns every waiting request to free trucks with its best learned strategy (a neural policy trained with reinforcement learning), on real road distances that avoid reported floods.</li>
-    <li><b>Drive.</b> Each driver opens their truck's link on a phone, follows the road route and marks each stop delivered, failed or road blocked.</li>
-    <li><b>Learn.</b> A blocked road becomes a hazard that the next routes avoid, unserved relief goes back in the queue, and every finished route teaches the agent: field scores, an ETA correction and lessons for the planner.</li>
+    <li><span><b>Report.</b> Field workers send text, a photo or a voice note in any language from <span class="num">/report</span>. Gemini turns it into requests: place, item, quantity, urgency. The same need reported twice becomes one request.</span></li>
+    <li><span><b>Plan.</b> A coordinator dispatches a wave. The agent assigns every waiting request to free trucks with its best learned strategy (a neural policy trained with reinforcement learning), on real road distances that avoid reported floods.</span></li>
+    <li><span><b>Drive.</b> Each driver opens their truck's link on a phone, follows the road route and marks each stop delivered, failed or road blocked.</span></li>
+    <li><span><b>Learn.</b> A blocked road becomes a hazard the next routes avoid, unserved relief returns to the queue, and every finished route teaches the agent: field scores, an ETA correction and lessons for the planner.</span></li>
   </ol>
-  <p class="hint" style="padding:0 16px 12px">No coordinator account? Open the <b>Simulator</b> tab and click <b>Run 5 episodes</b> to watch the agent plan, hit a collapsed bridge, recover and learn.</p>
+  <p class="hint" style="padding:0 18px 14px">No coordinator account? Open the Simulator and run 5 episodes to watch the agent plan, hit a collapsed bridge, recover and learn. Other agents can use ReliefRoute's tools over MCP at <span class="num">/mcp</span>.</p>
   <div class="dfoot"><button class="btn" id="howClose">Close</button></div>
 </dialog>
-<div class="toasts" id="toasts" aria-live="polite"></div>
 <dialog id="sitrepDlg" aria-labelledby="sitrepTitle">
-  <div class="dhead"><h2 id="sitrepTitle" style="margin:0">Situation report</h2><span class="hint" id="sitrepBy"></span></div>
+  <div class="dhead"><h2 id="sitrepTitle">Situation report</h2><span class="hint" id="sitrepBy"></span></div>
   <pre id="sitrepText"></pre>
   <div class="dfoot">
     <button class="btn" id="sitrepCopy">Copy</button>
@@ -420,88 +468,140 @@
     <button class="btn" id="sitrepClose">Close</button>
   </div>
 </dialog>
+<div class="toasts" id="toasts" aria-live="polite"></div>
+
 <script>
 const $ = id => document.getElementById(id);
-const B = { latMin: 12.95, latMax: 13.24, lngMin: 80.13, lngMax: 80.35 };
-const W = 600, H = 560;
-const px = (lat, lng) => [(lng - B.lngMin) / (B.lngMax - B.lngMin) * W, (B.latMax - lat) / (B.latMax - B.latMin) * H];
-const PX_PER_KM = W / ((B.lngMax - B.lngMin) * 111.32 * Math.cos(13.05 * Math.PI / 180));
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const mean = a => a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0;
 const MEM_KEY = "reliefroute-memory";
-const C = { text: "#e7e5e2", muted: "#8b9199", faint: "#3a4047", blue: "#7a9cc6", amber: "#e3a33b", red: "#e0574f", green: "#5fb37f", map: "#0b0d0f" };
+const C = { text: "#e9e7e3", muted: "#a1a9b2", faint: "#7d858f", signal: "#ff7a1a", road: "#3ddc97", enroute: "#6ea8fe", hazard: "#ff5a52",
+            other: "#c9ced4", land: "#0e1216", sea: "#070b10", grid: "#151b22", river: "#13283a", coast: "#22303d", halo: "#0b0e12" };
 let recBlob = null, recorder = null, localMem = null, aiModel = "", aiLevel = 0;
 try { localMem = JSON.parse(localStorage.getItem(MEM_KEY)); } catch { localMem = null; }
+
+// ---- map projection: the view is fitted to the screen, so the map always fills the stage -----------
+const B0 = { latMin: 12.95, latMax: 13.24, lngMin: 80.13, lngMax: 80.35 };
+const KX = Math.cos(13.05 * Math.PI / 180);
+let B = { ...B0 }, W = 600, H = 560, PX_PER_KM = 1, redraw = () => { $("map").innerHTML = baseMap(); };
+const px = (lat, lng) => [(lng - B.lngMin) / (B.lngMax - B.lngMin) * W, (B.latMax - lat) / (B.latMax - B.latMin) * H];
+function fitMap() {
+  const r = $("mapwrap").getBoundingClientRect();
+  if (r.width < 10 || r.height < 10) return;
+  W = Math.round(r.width); H = Math.round(r.height);
+  const kmW = (B0.lngMax - B0.lngMin) * 111.32 * KX, kmH = (B0.latMax - B0.latMin) * 110.57, want = W / H;
+  B = { ...B0 };
+  if (want > kmW / kmH) {
+    const span = kmH * want / (111.32 * KX), mid = (B0.lngMin + B0.lngMax) / 2 + 0.01;
+    B.lngMin = mid - span / 2; B.lngMax = mid + span / 2;
+  } else {
+    const span = kmW / want / 110.57, mid = (B0.latMin + B0.latMax) / 2;
+    B.latMin = mid - span / 2; B.latMax = mid + span / 2;
+  }
+  PX_PER_KM = W / ((B.lngMax - B.lngMin) * 111.32 * KX);
+  $("map").setAttribute("viewBox", `0 0 ${W} ${H}`);
+  redraw();
+}
 
 // ---- static geography (approximate) -------------------------------------------
 const COAST = [[13.24, 80.335], [13.215, 80.325], [13.16, 80.306], [13.12, 80.298], [13.09, 80.293], [13.06, 80.285],
   [13.03, 80.28], [13.0, 80.273], [12.97, 80.263], [12.95, 80.257]];
 const RIVERS = [
-  ["Cooum", [[13.075, 80.13], [13.07, 80.19], [13.076, 80.235], [13.07, 80.26], [13.068, 80.284]]],
-  ["Adyar", [[13.0, 80.13], [13.01, 80.18], [13.02, 80.22], [13.012, 80.25], [13.013, 80.274]]],
+  ["Cooum", [[13.075, 80.10], [13.075, 80.13], [13.07, 80.19], [13.076, 80.235], [13.07, 80.26], [13.068, 80.284]]],
+  ["Adyar", [[12.995, 80.10], [13.0, 80.13], [13.01, 80.18], [13.02, 80.22], [13.012, 80.25], [13.013, 80.274]]],
 ];
 const ZONES = [["Velachery", 12.9815, 80.2180], ["Saidapet", 13.0213, 80.2231], ["T Nagar", 13.0418, 80.2341],
   ["Mylapore", 13.0368, 80.2676], ["Perambur", 13.1180, 80.2330], ["Royapuram", 13.1137, 80.2954], ["Adyar", 13.0012, 80.2565],
   ["Kodambakkam", 13.0521, 80.2255], ["Ennore", 13.2146, 80.3203], ["Porur", 13.0382, 80.1565]];
 const pts = list => list.map(([la, lo]) => px(la, lo).map(v => v.toFixed(1)).join(",")).join(" ");
-const label = (x, y, t, fill, size = 10, extra = "") =>
-  `<text x="${x}" y="${y}" fill="${fill}" font-size="${size}" font-family="IBM Plex Sans, sans-serif" paint-order="stroke" stroke="${C.map}" stroke-width="3" ${extra}>${t}</text>`;
+const label = (x, y, t, fill, size = 11, extra = "") =>
+  `<text x="${x}" y="${y}" fill="${fill}" font-size="${size}" font-family="IBM Plex Sans, sans-serif" paint-order="stroke" stroke="${C.halo}" stroke-width="3.5" stroke-linejoin="round" ${extra}>${t}</text>`;
 
 function baseMap() {
-  let s = "";
-  for (let i = 1; i < 6; i++) s += `<line x1="${i * 100}" y1="0" x2="${i * 100}" y2="${H}" stroke="#14171a"/><line x1="0" y1="${i * 100}" x2="${W}" y2="${i * 100}" stroke="#14171a"/>`;
-  s += `<polygon points="${pts([...COAST, [12.95, 80.36], [13.24, 80.36]])}" fill="#10161d"/>`;
-  s += `<polyline points="${pts(COAST)}" fill="none" stroke="#28323d" stroke-width="1.5"/>`;
-  s += label(530, 300, "Bay of Bengal", "#3d4a58", 11, 'font-style="italic" text-anchor="middle"');
-  for (const [name, line] of RIVERS) {
-    s += `<polyline points="${pts(line)}" fill="none" stroke="#1d2c3a" stroke-width="2.5" stroke-linecap="round"/>`;
-    const [x, y] = px(...line[1]); s += label(x, y - 6, name, "#3d4a58", 9.5, 'font-style="italic"');
+  let s = `<defs>
+    <pattern id="hatch" width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="7" height="7" fill="#ff5a5214"/><line x1="0" y1="0" x2="0" y2="7" stroke="#ff5a52" stroke-opacity=".6" stroke-width="2"/></pattern>
+    <filter id="glow" x="-10%" y="-10%" width="120%" height="120%"><feGaussianBlur stdDeviation="3.5"/></filter>
+  </defs>`;
+  s += `<rect width="${W}" height="${H}" fill="${C.sea}"/>`;
+  const land = [[B.latMax + 1, COAST[0][1]], ...COAST, [B.latMin - 1, COAST.at(-1)[1]], [B.latMin - 1, B.lngMin - 1], [B.latMax + 1, B.lngMin - 1]];
+  s += `<polygon points="${pts(land)}" fill="${C.land}"/>`;
+  for (let la = Math.ceil(B.latMin / 0.05) * 0.05; la < B.latMax; la += 0.05) {  // coordinate grid
+    const [, y] = px(la, B.lngMin);
+    s += `<line x1="0" y1="${y}" x2="${W}" y2="${y}" stroke="${C.grid}"/>` + label(6, y - 4, `${la.toFixed(2)}°N`, "#5d6670", 9.5, 'font-family="IBM Plex Mono, monospace"');
   }
-  for (const [name, la, lo] of ZONES) { const [x, y] = px(la, lo); s += label(x - 4, y + 18, name.toUpperCase(), "#4a525b", 8.5, 'letter-spacing=".08em"'); }
-  const km5 = 5 * PX_PER_KM;
-  s += `<line x1="16" y1="${H - 16}" x2="${16 + km5}" y2="${H - 16}" stroke="${C.muted}" stroke-width="1.5"/><line x1="16" y1="${H - 20}" x2="16" y2="${H - 12}" stroke="${C.muted}"/><line x1="${16 + km5}" y1="${H - 20}" x2="${16 + km5}" y2="${H - 12}" stroke="${C.muted}"/>`;
-  s += label(16, H - 24, "5 km", C.muted, 10, 'font-family="IBM Plex Mono, monospace"');
+  for (let lo = Math.ceil(B.lngMin / 0.05) * 0.05; lo < B.lngMax; lo += 0.05) {
+    const [x] = px(B.latMin, lo);
+    s += `<line x1="${x}" y1="0" x2="${x}" y2="${H}" stroke="${C.grid}"/>` + label(x + 4, H - 6, `${lo.toFixed(2)}°E`, "#5d6670", 9.5, 'font-family="IBM Plex Mono, monospace"');
+  }
+  s += `<polyline points="${pts(COAST)}" fill="none" stroke="${C.coast}" stroke-width="1.5"/>`;
+  const [bx, by] = px(13.07, 80.33);
+  s += label(Math.min(bx, W - 60), by, "BAY OF BENGAL", "#33475a", 11, 'font-style="italic" letter-spacing="3" text-anchor="middle"');
+  for (const [name, line] of RIVERS) {
+    s += `<polyline points="${pts(line)}" fill="none" stroke="${C.river}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>`;
+    const [x, y] = px(...line[2]); s += label(x, y - 7, name, "#3c5a74", 10, 'font-style="italic"');
+  }
+  for (const [name, la, lo] of ZONES) { const [x, y] = px(la, lo); s += label(x, y + 22, name.toUpperCase(), "#66707b", 9.5, 'letter-spacing="1.6" text-anchor="middle"'); }
+  const km5 = 5 * PX_PER_KM, sx = W - km5 - 18, sy = 22;  // scale bar and north arrow, top right
+  s += `<line x1="${sx}" y1="${sy}" x2="${sx + km5}" y2="${sy}" stroke="${C.muted}" stroke-width="2"/><line x1="${sx}" y1="${sy - 4}" x2="${sx}" y2="${sy + 4}" stroke="${C.muted}" stroke-width="1.5"/><line x1="${sx + km5}" y1="${sy - 4}" x2="${sx + km5}" y2="${sy + 4}" stroke="${C.muted}" stroke-width="1.5"/>`;
+  s += label(sx + km5, sy + 16, "5 km", C.muted, 10, 'font-family="IBM Plex Mono, monospace" text-anchor="end"');
+  s += `<path d="M${sx - 22} ${sy + 8} L${sx - 16} ${sy - 8} L${sx - 10} ${sy + 8} L${sx - 16} ${sy + 4} Z" fill="${C.muted}"/>` + label(sx - 16, sy + 22, "N", C.muted, 10, 'text-anchor="middle" font-family="IBM Plex Mono, monospace"');
   return s;
 }
 
-function drawMap(res) {
+function routeLine(points, dashed, title) {  // glow underlay, solid line, and a slow flow showing the direction of travel
+  return `<polyline points="${points}" fill="none" stroke="${C.road}" stroke-width="8" stroke-opacity=".28" filter="url(#glow)" stroke-linejoin="round"/>` +
+    `<polyline points="${points}" fill="none" stroke="${C.road}" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round" ${dashed ? 'stroke-dasharray="8 6"' : ""}><title>${title}</title></polyline>` +
+    (dashed ? "" : `<polyline class="flow" points="${points}" fill="none" stroke="#eafff5" stroke-width="2.5" stroke-dasharray="2 14" stroke-linecap="round" stroke-opacity=".85"/>`);
+}
+function tag(x, y, text, color) {  // a small square callout on the map
+  const w = text.length * 6.7 + 14;
+  const tx = Math.min(Math.max(x + 8, 4), W - w - 4), ty = Math.min(Math.max(y - 26, 4), H - 24);
+  return `<g><rect x="${tx}" y="${ty}" width="${w}" height="20" fill="#0a0c0f" stroke="${color}" stroke-width="1"/>` +
+    `<text x="${tx + 7}" y="${ty + 14}" fill="${C.text}" font-size="11" font-family="IBM Plex Mono, monospace">${esc(text)}</text></g>`;
+}
+function hazardShape(h) {
+  const [x, y] = px(h.lat, h.lng);
+  return `<circle cx="${x}" cy="${y}" r="${Math.max(7, h.radius_km * PX_PER_KM)}" fill="url(#hatch)" stroke="${C.hazard}" stroke-width="1.5"><title>${esc(h.label)}</title></circle>` +
+    label(x + Math.max(7, h.radius_km * PX_PER_KM) + 4, y + 4, esc(h.label.length > 36 ? h.label.slice(0, 35) + "…" : h.label), C.hazard, 11, 'font-weight="500"');
+}
+function depotShape(d, stock) {
+  const [x, y] = px(d.lat, d.lng);
+  return `<rect x="${x - 6}" y="${y - 6}" width="12" height="12" fill="${C.text}" stroke="${C.halo}" stroke-width="2"><title>${esc(d.name)}: ${stock}</title></rect>` +
+    label(x + 11, y - 8, esc(d.name), C.text, 12, 'font-weight="600"');
+}
+
+function drawMap(res) {  // simulator episode
+  redraw = () => drawMap(res);
   const depots = Object.fromEntries(res.initial.depots.map(d => [d.id, d]));
   const needs = Object.fromEntries(res.initial.needs.map(n => [n.id, n]));
   const at = o => px(o.lat, o.lng);
   let s = baseMap();
-  for (const h of res.hazards) {
-    const [x, y] = at(h);
-    s += `<circle cx="${x}" cy="${y}" r="${h.radius_km * PX_PER_KM}" fill="${C.red}26" stroke="${C.red}" stroke-width="1"><title>${esc(h.label)}</title></circle>`;
-    s += label(x + 8, y - 8, esc(h.label), C.red, 10);
-  }
+  for (const h of res.hazards) s += hazardShape(h);
   for (const t of res.trace) for (const b of t.info.blocked) {
     const [x1, y1] = at(b.from || depots[b.depot_id]), [x2, y2] = at(needs[b.need_id]);
     const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
-    s += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${C.red}" stroke-width="1.5" stroke-dasharray="2 4"/>`;
-    s += `<path d="M${mx - 5} ${my - 5} L${mx + 5} ${my + 5} M${mx + 5} ${my - 5} L${mx - 5} ${my + 5}" stroke="${C.red}" stroke-width="2.5" stroke-linecap="round"/>`;
+    s += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${C.hazard}" stroke-width="1.5" stroke-dasharray="2 5"/>`;
+    s += `<path d="M${mx - 6} ${my - 6} L${mx + 6} ${my + 6} M${mx + 6} ${my - 6} L${mx - 6} ${my + 6}" stroke="${C.hazard}" stroke-width="3" stroke-linecap="square"/>`;
   }
   for (const d of res.deliveries) {  // one leg per delivery: depot or previous stop -> this stop
     const [x1, y1] = at(d.from || depots[d.depot_id]), [x2, y2] = at(needs[d.need_id]);
     const truck = d.truck_id ? `${d.truck_id} stop ${d.stop}, ` : "";
-    s += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${C.green}" stroke-width="2" ${d.detour ? 'stroke-dasharray="7 5"' : ""}><title>${truck}${d.need_id} ← ${d.depot_id}: ${d.qty} ${d.item}, ${d.km} km, arrives ${d.minutes} min${d.detour ? " (detour)" : ""}</title></line>`;
-    if (d.stop > 1) s += `<circle cx="${x1}" cy="${y1}" r="2.5" fill="${C.green}"/>`;
+    s += routeLine(`${x1},${y1} ${x2},${y2}`, d.detour, `${truck}${d.need_id} ← ${d.depot_id}: ${d.qty} ${d.item}, ${d.km} km, arrives ${d.minutes} min${d.detour ? " (detour)" : ""}`);
   }
   for (const n of Object.values(needs)) {
-    const [x, y] = at(n), field = n.source === "field", unmet = res.unmet.includes(n.id);
-    s += `<circle cx="${x}" cy="${y}" r="${3.5 + n.urgency * 1.2}" fill="${field ? C.amber : C.blue}" ${unmet ? `stroke="${C.red}" stroke-width="2.5"` : ""}><title>${n.id} ${esc(n.zone)}: ${n.requested} ${n.item}, urgency ${n.urgency}${unmet ? " (unmet)" : ""}</title></circle>`;
-    s += label(x + 10, y + 4, `${n.id}${field ? " " + esc(n.zone) : ""} · ${n.requested} ${n.item}`, field ? C.amber : "#b9c2cc", 10);
+    const [x, y] = at(n), field = n.source === "field", unmet = res.unmet.includes(n.id), r = 4 + n.urgency * 1.2;
+    if (n.urgency >= 4) s += `<circle cx="${x}" cy="${y}" r="${r + 5}" fill="none" stroke="${field ? C.signal : C.other}" stroke-opacity=".45"/>`;
+    s += `<circle cx="${x}" cy="${y}" r="${r}" fill="${field ? C.signal : C.other}" ${unmet ? `stroke="${C.hazard}" stroke-width="3"` : ""}><title>${n.id} ${esc(n.zone)}: ${n.requested} ${n.item}, urgency ${n.urgency}${unmet ? " (unmet)" : ""}</title></circle>`;
+    s += label(x + r + 6, y + 4, `${field ? esc(n.zone) + " · " : ""}${n.requested} ${n.item}`, field ? C.signal : C.muted, 11);
   }
-  for (const d of Object.values(depots)) {
-    const [x, y] = at(d), stock = Object.entries(d.stock).map(([k, v]) => `${k} ${v}`).join(", ");
-    s += `<rect x="${x - 6}" y="${y - 6}" width="12" height="12" fill="${C.text}"><title>${esc(d.name)}: ${stock}</title></rect>`;
-    s += label(x + 10, y - 7, `${d.id} ${esc(d.name)}`, C.text, 11, 'font-weight="600"');
-  }
+  for (const d of Object.values(depots)) s += depotShape(d, Object.entries(d.stock).map(([k, v]) => `${k} ${v}`).join(", "));
   $("map").innerHTML = s;
 }
 
-// ---- event log -------------------------------------------------------------------
+// ---- agent log -------------------------------------------------------------------
 let evBatch = null;
+const nowClock = () => new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
 function ev(tag, cls, html) {  // events of one action form a group; the newest group is on top
   $("log").querySelector(".empty")?.remove();
   if (!evBatch || !evBatch.isConnected) {
@@ -512,13 +612,23 @@ function ev(tag, cls, html) {  // events of one action form a group; the newest 
     while ($("log").children.length > 60) $("log").lastElementChild.remove();
   }
   const d = document.createElement("div");
-  d.className = "ev"; d.innerHTML = `<span class="tag ${cls}">${tag}</span><div>${html}</div>`;
+  d.className = "ev"; d.innerHTML = `<time>${nowClock()}</time><span class="tag ${cls}">${tag}</span><div>${html}</div>`;
   evBatch.appendChild(d);
+  const plain = d.lastElementChild.textContent.replace(/\s+/g, " ").trim();
+  $("logLatest").textContent = `${tag} · ${plain.slice(0, 140)}`;
+  $("log").scrollTop = 0;
 }
+$("logToggle").onclick = () => {
+  const open = $("logpanel").classList.toggle("open");
+  $("logToggle").textContent = open ? "Collapse" : "Expand";
+  $("logToggle").setAttribute("aria-expanded", open);
+  try { localStorage.setItem("reliefroute-log-open", open ? "1" : ""); } catch {}
+  requestAnimationFrame(fitMap);
+};
 function toast(msg, { tone = "", action, onAction, ms = 5000 } = {}) {
   const t = document.createElement("div");
   t.className = "toast"; t.dataset.tone = tone;
-  t.innerHTML = `<span>${esc(msg)}</span>${action ? `<button class="btn" type="button">${esc(action)}</button>` : ""}`;
+  t.innerHTML = `<span>${esc(msg)}</span>${action ? `<button class="btn sm" type="button">${esc(action)}</button>` : ""}`;
   if (action) t.querySelector("button").onclick = () => { onAction(); t.remove(); };
   $("toasts").append(t);
   setTimeout(() => t.remove(), ms);
@@ -533,25 +643,19 @@ function healTag(h) {
 function setAI(level, text) {  // only escalates within a session: a tripped breaker stays visible
   if (level < aiLevel) return;
   aiLevel = level;
-  $("ai").dataset.tone = ["ok", "warn", "bad"][level];
+  $("ai").className = ["", "warn", "bad"][level];
   $("ai").textContent = text;
 }
 function updateAI(heals) {
-  if (heals.some(h => /intake failed|Planner crashed|Reflection via Gemini failed/.test(h))) setAI(2, "AI down · rule-based backup");
-  else if (heals.some(h => /quota exhausted/.test(h))) setAI(1, "Gemini · failover model");
+  if (heals.some(h => /intake failed|Planner crashed|Reflection via Gemini failed/.test(h))) setAI(2, "AI offline · rule-based backup");
+  else if (heals.some(h => /quota exhausted/.test(h))) setAI(1, "AI on failover model");
 }
 
-// ---- pipeline ------------------------------------------------------------------------
-function pipeBusy() { $("pipe").classList.add("busy"); [...$("pipe").children].forEach(s => s.classList.remove("on")); }
-async function pipeRun(disrupted, last = 6) {
-  $("pipe").classList.remove("busy");
-  for (const [i, s] of [...$("pipe").children].entries()) {
-    if (((i === 3 || i === 4) && !disrupted) || i > last) continue;
-    s.classList.add("on"); await sleep(260);
-  }
-}
+// ---- working indicator: a thin scan line across the top of the map --------------------------------
+function pipeBusy() { $("stage").classList.add("busy"); }
+function pipeDone() { $("stage").classList.remove("busy"); }
 
-// ---- performance panel -----------------------------------------------------------------
+// ---- simulator panels -----------------------------------------------------------------
 function renderMemory(mem) {
   localMem = mem;
   try { localStorage.setItem(MEM_KEY, JSON.stringify(mem)); } catch {}
@@ -567,27 +671,26 @@ function renderMemory(mem) {
   const vals = all.slice(-40), L = 34, R = 312, T = 12, Bt = 128;
   const X = i => L + (vals.length === 1 ? (R - L) / 2 : i * (R - L) / (vals.length - 1)), Y = v => Bt - v / 100 * (Bt - T);
   let s = "";
-  for (const g of [0, 50, 100]) s += `<line x1="${L}" y1="${Y(g)}" x2="${R}" y2="${Y(g)}" stroke="#1d2126" ${g ? 'stroke-dasharray="2 4"' : ""}/><text x="${L - 6}" y="${Y(g) + 3}" fill="${C.muted}" font-size="9.5" font-family="IBM Plex Mono, monospace" text-anchor="end">${g}%</text>`;
+  for (const g of [0, 50, 100]) s += `<line x1="${L}" y1="${Y(g)}" x2="${R}" y2="${Y(g)}" stroke="#1d232a"/><text x="${L - 6}" y="${Y(g) + 3}" fill="${C.faint}" font-size="9.5" font-family="IBM Plex Mono, monospace" text-anchor="end">${g}%</text>`;
   if (vals.length) {
     const avg = vals.map((_, i) => mean(vals.slice(Math.max(0, i - 4), i + 1)));
-    s += vals.map((v, i) => `<circle cx="${X(i)}" cy="${Y(v)}" r="2.5" fill="${C.blue}"><title>Episode ${mem.episodes.length - vals.length + i + 1}: ${v}%</title></circle>`).join("");
-    if (vals.length > 1) s += `<polyline fill="none" stroke="${C.green}" stroke-width="2" points="${avg.map((v, i) => X(i) + "," + Y(v)).join(" ")}"/>`;
-    s += `<text x="${R}" y="146" fill="${C.muted}" font-size="9.5" font-family="IBM Plex Mono, monospace" text-anchor="end">last ${vals.length} episodes</text>`;
+    s += vals.map((v, i) => `<circle cx="${X(i)}" cy="${Y(v)}" r="2.5" fill="${C.enroute}"><title>Episode ${mem.episodes.length - vals.length + i + 1}: ${v}%</title></circle>`).join("");
+    if (vals.length > 1) s += `<polyline fill="none" stroke="${C.road}" stroke-width="2" points="${avg.map((v, i) => X(i) + "," + Y(v)).join(" ")}"/>`;
+    s += `<text x="${R}" y="146" fill="${C.faint}" font-size="9.5" font-family="IBM Plex Mono, monospace" text-anchor="end">last ${vals.length} episodes</text>`;
   } else s += `<text x="${(L + R) / 2}" y="78" fill="${C.muted}" font-size="11" text-anchor="middle" font-family="IBM Plex Sans, sans-serif">No episodes yet</text>`;
   $("chart").innerHTML = s;
 
   const arms = Object.entries(mem.bandit), tried = arms.filter(([, v]) => v.n);
   const best = tried.length ? tried.reduce((a, b) => (b[1].mean > a[1].mean ? b : a))[0] : null;
-  $("bandit").innerHTML = `<div class="pol polhead"><span>strategy</span><span>avg score</span><span></span><span class="runs">runs</span></div>` +
+  $("bandit").innerHTML = `<div class="pol polhead"><span>strategy</span><span>average score</span><span></span><span class="runs">runs</span></div>` +
     arms.map(([k, v]) => `<div class="pol ${k === best ? "best" : ""}"><span class="name">${esc(k)}</span>` +
       `<span class="bar"><i style="width:${v.n ? Math.max(0, Math.min(100, v.mean)) : 0}%"></i></span>` +
       `<span class="num">${v.n ? v.mean.toFixed(0) + "%" : "–"}</span><span class="runs">${v.n}</span></div>`).join("");
   $("lessons").innerHTML = mem.lessons.length ? mem.lessons.map(l => `<li>${esc(l)}</li>`).join("")
-    : `<li class="hint" style="list-style:none;margin-left:-20px">No lessons yet. Dispatch a report or run training.</li>`;
+    : `<li class="hint" style="list-style:none;margin-left:-20px">No lessons yet. Dispatch, drive or train to create some.</li>`;
 }
 
 function renderEpisode(res) {
-  $("log").innerHTML = "";
   const it = res.intake;
   if (it) {
     ev("INTAKE", "intake", `${esc(it.summary)} <span class="sub">· ${esc(it.language)}</span>` +
@@ -598,27 +701,27 @@ function renderEpisode(res) {
     ev(`STEP ${t.step}`, t.info.blocked.length ? "bad" : "", `<span class="sub">${esc(t.strategy)}</span> · ${esc(t.reasoning)}` +
       t.info.delivered.map(d => `<div class="sub num">${d.need_id} ← ${d.truck_id || d.depot_id}${d.stop ? ` #${d.stop}` : ""}  ${d.qty} ${d.item}  ${d.km} km  ${d.minutes} min${d.detour ? "  detour" : ""}` +
         (d.eta ? `  (road ETA ${d.eta.minutes} min, ${d.eta.source === "google_routes" ? "Google Routes" : "estimate"})` : "") + `</div>`).join("") +
-      t.info.blocked.map(b => `<div class="num" style="color:var(--red)">${b.need_id} ← ${b.truck_id || b.depot_id}  blocked by ${b.hazards.join(", ")}</div>`).join("") +
-      (t.info.no_truck || []).map(b => `<div class="num" style="color:var(--amber)">${b.need_id} ← ${b.depot_id}  no truck capacity left this round</div>`).join(""));
+      t.info.blocked.map(b => `<div class="num" style="color:var(--hazard)">${b.need_id} ← ${b.truck_id || b.depot_id}  blocked by ${b.hazards.join(", ")}</div>`).join("") +
+      (t.info.no_truck || []).map(b => `<div class="num" style="color:var(--signal)">${b.need_id} ← ${b.depot_id}  no truck capacity left this round</div>`).join(""));
   }
   for (const h of res.heals) { const [tag, cls] = healTag(h); ev(tag, cls, esc(h.replace(/^ALERT\s*/, ""))); }
-  ev("SCORE", res.unmet.length ? "bad" : "good", `<span class="num">${res.score}%</span> of best possible <span class="sub">· reward ${res.total_reward} · unmet: ${res.unmet.join(", ") || "none"}</span>`);
+  ev("SCORE", res.unmet.length ? "bad" : "good", `<span class="num">${res.score}%</span> of the best possible <span class="sub">· reward ${res.total_reward} · unmet: ${res.unmet.join(", ") || "none"}</span>`);
   for (const l of res.new_lessons) ev("LESSON", "lesson", esc(l));
   drawMap(res);
   updateAI(res.heals);
 }
 
-// ---- actions --------------------------------------------------------------------------------
+// ---- report composer ------------------------------------------------------------------------------
 function showAttached() {
   const parts = [];
   if ($("image").files[0]) parts.push(`photo: ${esc($("image").files[0].name)}`);
   if ($("audio").files[0]) parts.push(`audio: ${esc($("audio").files[0].name)}`);
   else if (recBlob) parts.push(`voice note: ${(recBlob.size / 1024).toFixed(0)} KB`);
-  $("attached").innerHTML = parts.length ? parts.join(" · ") + `<a id="clear">clear</a>` : "";
+  $("attached").innerHTML = parts.length ? parts.join(" · ") + `<a id="clear" role="button" tabindex="0">clear</a>` : "";
   if (parts.length) $("clear").onclick = () => { $("image").value = ""; $("audio").value = ""; recBlob = null; showAttached(); };
 }
 $("image").onchange = showAttached; $("audio").onchange = showAttached;
-document.querySelectorAll(".tab").forEach(b => b.onclick = () => { $("text").value = b.dataset.t; $("text").focus(); });
+document.querySelectorAll(".sample").forEach(b => b.onclick = () => { $("text").value = b.dataset.t; $("text").focus(); });
 
 $("go").onclick = async () => {
   const fd = new FormData();
@@ -629,17 +732,15 @@ $("go").onclick = async () => {
   if ($("audio").files[0]) fd.append("audio", $("audio").files[0]);
   else if (recBlob) fd.append("audio", recBlob, recBlob.type === "audio/wav" ? "voice.wav" : "voice.webm");
   $("go").disabled = true; $("go").textContent = "Working…"; pipeBusy();
-  $("log").innerHTML = '<div class="empty">Reading the report, planning, dispatching and reviewing the outcome…</div>';
   try {
     const res = await api("/api/dispatch", { method: "POST", body: fd });
     renderEpisode(res); renderMemory(res.memory);
-    await pipeRun(res.trace.some(t => t.info.blocked.length || t.info.new_hazards.length));
-  } catch (e) { $("pipe").classList.remove("busy"); $("log").innerHTML = ""; ev("ERROR", "bad", esc(e.message)); }
-  finally { $("go").disabled = false; $("go").textContent = "Run full episode"; }
+  } catch (e) { ev("ERROR", "bad", esc(e.message)); toast(e.message, { tone: "bad" }); }
+  finally { pipeDone(); $("go").disabled = false; $("go").textContent = "Run full episode"; }
 };
 
 $("train").onclick = async () => {
-  $("train").disabled = true; $("log").innerHTML = "";
+  $("train").disabled = true; pipeBusy();
   try {
     for (let i = 1; i <= 5; i++) {  // one episode per request: live progress, no long-request timeouts
       $("train").textContent = `Running ${i} / 5…`;
@@ -651,8 +752,8 @@ $("train").onclick = async () => {
         last.new_lessons.map(l => `<div class="sub">Lesson: ${esc(l)}</div>`).join(""));
       drawMap(last); renderMemory(r.memory); updateAI(last.heals);
     }
-  } catch (e) { ev("ERROR", "bad", esc(e.message)); }
-  finally { $("train").disabled = false; $("train").textContent = "Run 5 episodes"; }
+  } catch (e) { ev("ERROR", "bad", esc(e.message)); toast(e.message, { tone: "bad" }); }
+  finally { pipeDone(); $("train").disabled = false; $("train").textContent = "Run 5 episodes"; }
 };
 
 $("reset").onclick = async () => {
@@ -692,7 +793,7 @@ $("rec").onclick = async () => {
       try { recBlob = await toWav(raw); } catch { recBlob = raw; }
       $("rec").textContent = "Record"; showAttached();
     };
-    recorder.start(); $("rec").innerHTML = '<span class="rec"></span>Stop recording';
+    recorder.start(); $("rec").innerHTML = '<span class="rec"></span>Stop';
   } catch { $("attached").textContent = "Microphone unavailable"; }
 };
 
@@ -730,15 +831,15 @@ function renderWho() {
   document.querySelectorAll("[data-coord]").forEach(c => { if (readonly) c.setAttribute("aria-disabled", "true"); else c.removeAttribute("aria-disabled"); });
   $("viewonly").hidden = !readonly;
   if (!me.signIn) {
-    el.innerHTML = `<span class="pill" data-tone="warn" title="Anyone with this link can dispatch. Configure coordinator sign-in to restrict it.">Open console · sign-in off</span>`;
+    el.innerHTML = `<span class="warn" title="Anyone with this link can dispatch. Configure coordinator sign-in to restrict it.">Open console</span>`;
   } else if (u) {
-    el.innerHTML = `<span class="pill" data-tone="${me.coordinator ? "ok" : "bad"}">${esc(u.email)}${me.coordinator ? "" : " · view only"}</span> <button class="linkbtn" id="signOut" type="button">Sign out</button>`;
+    el.innerHTML = `<span${me.coordinator ? "" : ' class="warn"'}>${esc(u.email)}${me.coordinator ? "" : " · view only"}</span> <button class="textbtn" id="signOut" type="button">Sign out</button>`;
     $("signOut").onclick = () => fbAuth.signOut();
-    if (!me.coordinator) $("viewonly").querySelector("b").textContent = `${u.email} is not on the coordinator list.`;
+    if (!me.coordinator) $("viewonly").querySelector("b").textContent = "NOT A COORDINATOR";
   } else {
-    el.innerHTML = `<button class="linkbtn" id="signIn" type="button">Coordinator sign-in</button>`;
+    el.innerHTML = `<button class="textbtn" id="signIn" type="button">Sign in</button>`;
     $("signIn").onclick = signIn;
-    $("viewonly").querySelector("b").textContent = "View only.";
+    $("viewonly").querySelector("b").textContent = "VIEW ONLY";
   }
   if (ops) renderOps(ops, opsSummary);
 }
@@ -747,7 +848,7 @@ document.addEventListener("click", e => {
   const c = e.target.closest("[data-coord]");
   if (!c || !document.body.classList.contains("readonly")) return;
   e.preventDefault(); e.stopImmediatePropagation();
-  toast("This needs a coordinator sign-in. Judges: try the Simulator tab or send a report.", me.signIn ? { action: "Sign in", onAction: signIn } : {});
+  toast("This needs a coordinator sign-in. Judges: open the Simulator or send a report.", me.signIn ? { action: "Sign in", onAction: signIn } : {});
 }, true);
 
 async function initAuth() {
@@ -758,7 +859,7 @@ async function initAuth() {
   try {
     await loadScript("https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js");
     await loadScript("https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js");
-  } catch { $("who").textContent = "Sign-in unavailable (Firebase did not load)"; return; }
+  } catch { $("who").textContent = "Sign-in unavailable"; return; }
   firebase.initializeApp(cfg);
   fbAuth = firebase.auth();
   fbAuth.onAuthStateChanged(async u => {
@@ -772,64 +873,66 @@ async function initAuth() {
 const ITEMS = ["water", "food", "medicine", "blankets"];
 let ops = null, opsSummary = null, opsBusy = false, opsSeen = null, stopSeen = null, routeSeen = null, picking = false, picked = null;
 const mins = ts => Math.max(0, Math.round((Date.now() / 1000 - ts) / 60));
-const hhmm = ts => new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+const hhmm = ts => new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
 
 function setMode(m) {
   document.body.dataset.mode = m;
   document.querySelectorAll(".mode").forEach(b => { b.classList.toggle("on", b.dataset.mode === m); b.setAttribute("aria-selected", b.dataset.mode === m); });
   try { localStorage.setItem("reliefroute-mode", m); } catch {}
+  requestAnimationFrame(fitMap);
   if (m === "ops") { if (ops) drawOpsMap(); refreshOps(); } else api("/api/scenario").then(drawMap).catch(() => {});
 }
 document.querySelectorAll(".mode").forEach(b => b.onclick = () => setMode(b.dataset.mode));
 
-const TONE = { waiting: "warn", en_route: "info", delivered: "ok", closed: "" };
-const STATUS = { waiting: "Waiting", en_route: "On a truck", delivered: "Delivered", closed: "Closed" };
 function incLine(i) {
-  const w = mins(i.reported_at), late = i.status === "waiting" ? (w >= 60 ? "bad" : w >= 30 ? "warn" : "") : "";
+  const w = mins(i.reported_at);
   const amount = i.status === "waiting" && i.qty !== i.requested ? `${i.qty} of ${i.requested}` : i.requested;
-  const detail = i.status === "waiting" ? (i.assigned ? `${i.assigned} already on a truck` : "")
-    : i.status === "en_route" ? `${i.assigned} on a truck` : i.status === "delivered" ? `${i.delivered} delivered` : "";
+  const state = i.status === "waiting" ? `<span class="ist wait ${w >= 60 ? "bad" : w >= 30 ? "late" : ""}">waiting ${w} min</span>`
+    : i.status === "en_route" ? `<span class="ist road">on the road</span>` : i.status === "delivered" ? `<span class="ist done">delivered</span>` : `<span class="ist">closed</span>`;
+  const detail = i.status === "waiting" && i.assigned ? `${i.assigned} already on a truck` : i.status === "delivered" ? `${i.delivered} delivered` : "";
+  const extra = [detail, i.source === "phone" ? `phone${i.located_by === "gps" ? ", GPS" : ""}` : "", i.note].filter(Boolean).map(esc).join(" · ");
   const canClose = me.coordinator && i.status === "waiting" && !i.assigned;
-  return `<div class="inc ${i.status}"><div class="top"><div><span class="pill" data-tone="${TONE[i.status]}">${STATUS[i.status]}</span>` +
-    (i.status === "waiting" ? ` <span class="wait num" data-late="${late}">${w} min</span>` : "") + `</div>` +
-    (canClose ? `<button class="link small" data-close="${esc(i.id)}" aria-label="Close request ${esc(i.id)}">close</button>` : "") + `</div>` +
-    `<div><span class="id">${esc(i.id)}</span><b>${esc(i.zone)}</b> · ${amount} ${esc(i.item)} · <span class="urg ${i.urgency >= 4 ? "hi" : ""}">urgency ${i.urgency}/5</span>` +
-    `${i.reports > 1 ? `<span class="badge">${i.reports} reports</span>` : ""}</div>` +
-    `<div class="meta">${detail ? detail + " · " : ""}${esc(i.source)}${i.located_by === "gps" ? " (GPS)" : ""}${i.note ? " · " + esc(i.note) : ""}</div></div>`;
+  return `<div class="inc" data-status="${i.status}" style="--u:${i.urgency}"><div class="urgbar" aria-hidden="true"></div><div>` +
+    `<div class="inc-l1"><b>${esc(i.zone)}</b>${state}</div>` +
+    `<div class="inc-l2"><span class="num">${amount}</span> ${esc(i.item)} · <span class="${i.urgency >= 4 ? "hi" : ""}">urgency ${i.urgency}/5</span>${i.reports > 1 ? ` · ${i.reports} reports` : ""}</div>` +
+    (extra ? `<div class="inc-l3">${extra}</div>` : "") +
+    (canClose ? `<button class="btn sm closebtn" data-close="${esc(i.id)}" aria-label="Close request ${esc(i.id)} in ${esc(i.zone)}">Close request</button>` : "") + `</div></div>`;
 }
 
 function emptyState() {
-  return `<div class="empty-state"><b>No incidents yet.</b> The full loop in three steps:<ol>
-    <li>Add a report: pick a sample above and click <b>Add to incident queue</b>, or open <a href="/report" target="_blank" style="color:var(--text)">/report</a> on a phone.</li>
-    <li>Click <b>Dispatch wave</b>: trucks get road routes around reported floods.</li>
-    <li>Open a driver link under <b>Fleet</b> and mark a stop delivered or road blocked. Watch the map, the log and <b>Learning</b> update.</li></ol>
+  return `<div class="empty-state"><b>No incidents in this operation.</b><ol>
+    <li><span>Load a sample report above and add it to the queue, or send one from <a href="/report" target="_blank" style="color:var(--text)">/report</a> on a phone.</span></li>
+    <li><span>Dispatch a wave. Trucks get road routes around reported floods.</span></li>
+    <li><span>Open a truck's driver link under Fleet and mark a stop delivered or road blocked. The map, the agent log and Learning update.</span></li></ol>
     <button class="btn" type="button" data-sample="0">Load a sample report</button></div>`;
 }
 
 function renderOps(st, s) {
   ops = st; opsSummary = s;
-  const chip = (n, label, warn) => `<span class="chip ${warn ? "warn" : ""}"><b>${n}</b>${label}</span>`;
-  $("opsfig").innerHTML = chip(s.waiting, "waiting", s.waiting) + chip(s.en_route, "on trucks") + chip(s.units_delivered, "units delivered") +
-    chip(`${s.trucks_free}/${s.trucks_free + s.trucks_out}`, "trucks free") + chip(`${s.longest_wait_min}m`, "longest wait", s.longest_wait_min >= 30);
-  $("waveWhy").textContent = !s.waiting ? "Nothing waiting to dispatch"
-    : !s.trucks_free ? "No free truck: recall a route or add a truck"
-    : `${s.waiting} waiting → ${s.trucks_free} free truck${s.trucks_free === 1 ? "" : "s"}`;
+  const num = (v, l, signal) => `<div class="sn ${signal ? "signal" : ""}"><b>${v}</b><span>${l}</span></div>`;
+  $("sitNums").innerHTML = num(s.waiting, "Waiting", s.waiting > 0) + num(s.en_route, "On the road") +
+    num(s.units_delivered, "Units delivered") + num(s.longest_wait_min, "Longest wait, min", s.longest_wait_min >= 30);
+  $("waveWhy").textContent = !s.waiting ? "Nothing waiting to dispatch."
+    : !s.trucks_free ? "No free truck. Recall a route or add a truck."
+    : `${s.waiting} request${s.waiting === 1 ? "" : "s"} waiting · ${s.trucks_free} of ${s.trucks_free + s.trucks_out} trucks free`;
+  $("waveWhy").className = s.waiting && s.trucks_free ? "go" : "";
   const rank = { waiting: 0, en_route: 1, delivered: 2, closed: 3 };
   const list = [...st.incidents].sort((a, b) => rank[a.status] - rank[b.status] ||
     (rank[a.status] ? b.reported_at - a.reported_at : b.urgency - a.urgency || a.reported_at - b.reported_at));
-  const live = list.filter(i => rank[i.status] < 2), done = list.filter(i => rank[i.status] >= 2);
-  const head = (t, n) => n ? `<div class="grouphead">${t} (${n})</div>` : "";
+  const waiting = list.filter(i => i.status === "waiting"), road = list.filter(i => i.status === "en_route"), done = list.filter(i => rank[i.status] >= 2);
+  const head = (t, n) => n ? `<div class="grouphead"><span>${t}</span><span class="num">${n}</span></div>` : "";
   $("queueList").innerHTML = !list.length && !st.routes.length ? emptyState()
-    : head("Waiting", live.filter(i => i.status === "waiting").length) + live.filter(i => i.status === "waiting").map(incLine).join("") +
-      head("On trucks", live.filter(i => i.status === "en_route").length) + live.filter(i => i.status === "en_route").map(incLine).join("") +
-      (done.length ? `<details class="donegroup"><summary>Done (${done.length})</summary>${done.slice(0, 60).map(incLine).join("")}</details>` : "");
+    : head("Waiting, most urgent first", waiting.length) + waiting.map(incLine).join("") +
+      head("On the road", road.length) + road.map(incLine).join("") +
+      (done.length ? `<details class="donegroup"><summary>Done · ${done.length}</summary>${done.slice(0, 60).map(incLine).join("")}</details>` : "");
+  $("queueCount").textContent = list.length ? `${list.length} total` : "";
   $("queueList").setAttribute("aria-busy", "false");
-  const lowStock = st.depots.some(d => ITEMS.some(i => (d.stock[i] || 0) < 100));
+  const lowStock = st.depots.reduce((n, d) => n + ITEMS.filter(i => (d.stock[i] || 0) < 100).length, 0);
   const problem = st.routes.some(r => r.status === "active" && r.stops.some(x => x.status === "failed" || x.status === "blocked"));
   const hz = st.hazards.filter(h => h.active).length;
-  $("nFleet").textContent = s.trucks_out ? ` ${s.trucks_out} out` : ""; $("nFleet").parentElement.classList.toggle("alert", problem);
-  $("nStock").textContent = ""; $("nStock").parentElement.classList.toggle("alert", lowStock);
-  $("nHaz").textContent = hz ? ` ${hz}` : ""; $("nHaz").parentElement.classList.toggle("alert", hz > 0);
+  $("nFleet").textContent = s.trucks_out ? `${s.trucks_out} out` : ""; $("nFleet").parentElement.classList.toggle("alert", problem);
+  $("nStock").textContent = lowStock ? `${lowStock} low` : ""; $("nStock").parentElement.classList.toggle("alert", lowStock > 0);
+  $("nHaz").textContent = hz ? `${hz}` : ""; $("nHaz").parentElement.classList.toggle("alert", hz > 0);
   renderFleet(st); renderStock(st); renderHazards(st); renderActivity(st);
   if (document.body.dataset.mode === "ops" && !opsBusy) drawOpsMap();
 }
@@ -840,19 +943,20 @@ function renderFleet(st) {
   const order = t => { const r = t.route_id && routes[t.route_id];
     return r && r.stops.some(x => x.status === "failed" || x.status === "blocked") ? 0 : r ? 1 : t.status === "idle" ? 2 : 3; };
   const trucks = [...st.trucks].sort((a, b) => order(a) - order(b) || nextEta(a) - nextEta(b));
+  const STATE = { idle: "Idle", on_route: "On route", out_of_service: "Out of service" };
   $("fleet").innerHTML = trucks.map(t => {
     const r = t.route_id && routes[t.route_id];
     const done = r ? r.stops.filter(x => x.status !== "pending").length : 0;
     const next = r && r.stops.find(x => x.status === "pending");
-    const info = r ? `${esc(r.id)} · ${done}/${r.stops.length} stops${next ? ` · next ${esc(next.zone)} ~${hhmm(r.created_at + next.eta_min * 60)}` : ""}`
+    const info = r ? `${esc(r.id)} · ${done} of ${r.stops.length} stops${next ? ` · next ${esc(next.zone)} ${hhmm(r.created_at + next.eta_min * 60)}` : ""}`
       : `${t.capacity} units · ${esc(t.depot_id)}`;
     const link = t.token ? `${location.origin}/driver/${t.token}` : "";
     const acts = [];
-    if (link) acts.push(`<button class="link small" data-copy="${esc(link)}">copy driver link</button>`,
-      `<a class="link small" href="${esc(link)}" target="_blank" rel="noopener">open</a>`);
-    if (me.coordinator && r) acts.push(`<button class="link small" data-recall="${esc(r.id)}">recall</button>`);
-    if (me.coordinator && !r) acts.push(`<button class="link small" data-service="${esc(t.id)}" data-on="${t.status === "out_of_service" ? 1 : 0}">${t.status === "out_of_service" ? "back in service" : "out of service"}</button>`);
-    return `<div class="${order(t) === 0 ? "truck-alert" : ""}"><div><span class="num">${esc(t.id)}</span> <span class="st ${t.status}">${t.status.replace(/_/g, " ")}</span>` +
+    if (link) acts.push(`<button class="btn sm" data-copy="${esc(link)}" aria-label="Copy driver link for ${esc(t.id)}">Copy link</button>`,
+      `<a class="btn sm" href="${esc(link)}" target="_blank" rel="noopener" aria-label="Open driver page for ${esc(t.id)}">Open</a>`);
+    if (me.coordinator && r) acts.push(`<button class="btn sm danger" data-recall="${esc(r.id)}">Recall</button>`);
+    if (me.coordinator && !r) acts.push(`<button class="btn sm" data-service="${esc(t.id)}" data-on="${t.status === "out_of_service" ? 1 : 0}">${t.status === "out_of_service" ? "Back in service" : "Stand down"}</button>`);
+    return `<div class="${order(t) === 0 ? "truck-alert" : ""}"><div><span class="truck-id">${esc(t.id)}</span><span class="st ${t.status}">${STATE[t.status] || t.status}</span>` +
       `<div class="sub">${info}</div></div><div class="acts">${acts.join("")}</div></div>`;
   }).join("") || '<div class="hint">No trucks.</div>';
   const opts = st.depots.map(d => `<option value="${esc(d.id)}">${esc(d.id)} ${esc(d.name)}</option>`).join("");
@@ -861,14 +965,14 @@ function renderFleet(st) {
 
 function renderStock(st) {
   $("stock").innerHTML = `<tr><th>Depot</th>${ITEMS.map(i => `<th>${i}</th>`).join("")}</tr>` +
-    st.depots.map(d => `<tr><td>${esc(d.name)} <span class="hint">${esc(d.id)}</span></td>` +
+    st.depots.map(d => `<tr><td>${esc(d.name)}</td>` +
       ITEMS.map(i => (d.stock[i] || 0) < 100 ? `<td class="low">${d.stock[i] || 0}<span class="sr-only"> (low)</span></td>` : `<td>${d.stock[i]}</td>`).join("") + `</tr>`).join("");
 }
 
 function renderHazards(st) {
   const active = st.hazards.filter(h => h.active);
-  $("hazards").innerHTML = active.map(h => `<div><div>${esc(h.label)}<div class="sub">${esc(h.id)} · ${esc(h.source)} · ${hhmm(h.reported_at)}</div></div>` +
-    (me.coordinator ? `<div class="acts"><button class="link small" data-clear="${esc(h.id)}">road reopened</button></div>` : "") + `</div>`).join("")
+  $("hazards").innerHTML = active.map(h => `<div><div>${esc(h.label)}<div class="sub">${esc(h.id)} · reported by ${esc(h.source)} · ${hhmm(h.reported_at)}</div></div>` +
+    (me.coordinator ? `<div class="acts"><button class="btn sm" data-clear="${esc(h.id)}">Reopened</button></div>` : "") + `</div>`).join("")
     || '<div class="hint">No active hazards.</div>';
 }
 
@@ -897,50 +1001,49 @@ function refreshMemory() {
 
 function drawOpsMap() {
   if (!ops) return;
+  redraw = drawOpsMap;
   const at = o => px(o.lat, o.lng);
   let s = baseMap();
-  for (const h of ops.hazards.filter(h => h.active)) {
-    const [x, y] = at(h);
-    s += `<circle cx="${x}" cy="${y}" r="${Math.max(4, h.radius_km * PX_PER_KM)}" fill="${C.red}26" stroke="${C.red}" stroke-width="1"><title>${esc(h.label)}</title></circle>`;
-    s += label(x + 8, y - 8, esc(h.label.length > 34 ? h.label.slice(0, 33) + "…" : h.label), C.red, 10);
-  }
+  for (const h of ops.hazards.filter(h => h.active)) s += hazardShape(h);
+  const tags = [];
   for (const r of ops.routes.filter(r => r.status === "active")) {
     if (r.shape.length > 1) {
-      s += `<polyline points="${pts(r.shape)}" fill="none" stroke="${C.green}" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round" ${r.source === "estimate" ? 'stroke-dasharray="7 5"' : ""}><title>${esc(r.id)} ${esc(r.truck_id)}: ${r.km} km, ${r.source === "road" ? "road route" : "estimate"}</title></polyline>`;
-      const [mx, my] = at({ lat: r.shape[Math.floor(r.shape.length / 2)][0], lng: r.shape[Math.floor(r.shape.length / 2)][1] });
-      s += label(mx + 6, my - 6, esc(r.truck_id), C.green, 10, 'font-family="IBM Plex Mono, monospace"');
+      s += routeLine(pts(r.shape), r.source === "estimate", `${esc(r.id)} ${esc(r.truck_id)}: ${r.km} km, ${r.source === "road" ? "road route" : "estimate"}`);
+      const next = r.stops.find(x => x.status === "pending"), mid = r.shape[Math.floor(r.shape.length * 0.45)];
+      const [mx, my] = at({ lat: mid[0], lng: mid[1] });
+      tags.push(tag(mx, my, `${r.truck_id}${next ? " · ETA " + hhmm(r.created_at + next.eta_min * 60) : ""}`, C.road));
     }
     for (const st of r.stops) {
-      const [x, y] = at(st), col = st.status === "pending" || st.status === "delivered" ? C.green : C.red;
-      s += `<circle cx="${x}" cy="${y}" r="7.5" fill="${st.status === "pending" ? C.map : col}" stroke="${col}" stroke-width="1.5"/>` +
-        `<text x="${x}" y="${y + 3.5}" text-anchor="middle" font-size="9.5" font-family="IBM Plex Mono, monospace" fill="${st.status === "pending" ? col : C.map}">${st.n}</text>`;
+      const [x, y] = at(st), col = st.status === "pending" || st.status === "delivered" ? C.road : C.hazard;
+      s += `<circle cx="${x}" cy="${y}" r="8" fill="${st.status === "pending" ? C.halo : col}" stroke="${col}" stroke-width="1.5"/>` +
+        `<text x="${x}" y="${y + 3.5}" text-anchor="middle" font-size="10" font-weight="600" font-family="IBM Plex Mono, monospace" fill="${st.status === "pending" ? col : C.halo}">${st.n}</text>`;
     }
   }
   for (const i of ops.incidents) {
     if (i.status === "closed") continue;
-    const [x, y] = at(i), col = i.status === "waiting" ? C.amber : i.status === "en_route" ? C.blue : C.green;
-    const done = i.status === "delivered";
-    s += `<circle cx="${x}" cy="${y}" r="${done ? 3 : 3.5 + i.urgency * 1.1}" fill="${col}" ${done ? 'opacity=".55"' : ""}><title>${esc(i.id)} ${esc(i.zone)}: ${i.requested} ${esc(i.item)}, ${esc(i.status.replace("_", " "))}</title></circle>`;
-    if (!done) s += label(x + 9, y + 4, `${esc(i.id)} ${esc(i.zone)} · ${i.qty || i.assigned} ${esc(i.item)}`, i.status === "waiting" ? C.amber : "#b9c2cc", 10);
+    const [x, y] = at(i);
+    if (i.status === "delivered") { s += `<circle cx="${x}" cy="${y}" r="3.5" fill="${C.road}" opacity=".7"><title>${esc(i.zone)}: ${i.requested} ${esc(i.item)} delivered</title></circle>`; continue; }
+    const r = 4 + i.urgency * 1.3, waiting = i.status === "waiting";
+    if (waiting && i.urgency >= 4) s += `<circle cx="${x}" cy="${y}" r="${r + 6}" fill="none" stroke="${C.signal}" stroke-opacity=".5"/>`;
+    s += waiting ? `<circle cx="${x}" cy="${y}" r="${r}" fill="${C.signal}"><title>${esc(i.zone)}: ${i.qty} ${esc(i.item)} waiting, urgency ${i.urgency}</title></circle>`
+      : `<circle cx="${x}" cy="${y}" r="${r}" fill="${C.halo}" stroke="${C.enroute}" stroke-width="2.5"><title>${esc(i.zone)}: ${i.assigned} ${esc(i.item)} on the road</title></circle>`;
+    s += label(x + r + 7, y + 4, `${esc(i.zone)} · ${i.qty || i.assigned} ${esc(i.item)}`, waiting ? C.text : C.muted, 12, waiting ? 'font-weight="600"' : "");
   }
-  for (const d of ops.depots) {
-    const [x, y] = at(d);
-    s += `<rect x="${x - 6}" y="${y - 6}" width="12" height="12" fill="${C.text}"><title>${esc(d.name)}: ${ITEMS.map(k => `${k} ${d.stock[k] || 0}`).join(", ")}</title></rect>`;
-    s += label(x + 10, y - 7, `${esc(d.id)} ${esc(d.name)}`, C.text, 11, 'font-weight="600"');
-  }
+  for (const d of ops.depots) s += depotShape(d, ITEMS.map(k => `${k} ${d.stock[k] || 0}`).join(", "));
+  s += tags.join("");
   if (picked) {
     const [x, y] = at(picked);
-    s += `<path d="M${x - 8} ${y} H${x + 8} M${x} ${y - 8} V${y + 8}" stroke="${C.text}" stroke-width="2"/>` + label(x + 10, y + 14, "new depot", C.text, 10);
+    s += `<path d="M${x - 10} ${y} H${x + 10} M${x} ${y - 10} V${y + 10}" stroke="${C.signal}" stroke-width="2"/>` + label(x + 12, y + 16, "new depot", C.signal, 11);
   }
   $("map").innerHTML = s;
 }
 
-// what happened elsewhere (phones, drivers) since the last refresh, for the event log
+// what happened elsewhere (phones, drivers) since the last refresh, for the agent log
 function noteChanges(st) {
   const fresh = opsSeen ? st.incidents.filter(i => !opsSeen.has(i.id)) : [];
   opsSeen = new Set(st.incidents.map(i => i.id));
   for (const i of fresh.filter(i => i.source === "phone"))
-    ev("PHONE", "intake", `${esc(i.id)} ${esc(i.zone)} · ${i.qty} ${esc(i.item)} · urgency ${i.urgency}${i.located_by === "gps" ? " · placed by GPS" : ""}<div class="sub">${esc(i.summary)}</div>`);
+    ev("PHONE", "intake", `${esc(i.zone)} · ${i.qty} ${esc(i.item)} · urgency ${i.urgency}${i.located_by === "gps" ? " · placed by GPS" : ""}<div class="sub">${esc(i.summary)}</div>`);
   const stops = new Map(st.routes.flatMap(r => r.stops.map(s => [`${r.id}#${s.n}`, [r, s]])));
   if (stopSeen) for (const [k, [r, s]] of stops) {
     if (stopSeen.get(k) !== "pending" || s.status === "pending") continue;
@@ -952,7 +1055,7 @@ function noteChanges(st) {
   }
   if (routeSeen) for (const r of st.routes) if (r.status === "done" && routeSeen.get(r.id) === "active") {
     const ok = r.stops.filter(s => s.status === "delivered").length;
-    ev("LEARN", "lesson", `${esc(r.id)} closed with ${ok}/${r.stops.length} stops delivered. The outcome is scored and arrival times update the ETA correction.`);
+    ev("LEARN", "lesson", `${esc(r.id)} closed with ${ok} of ${r.stops.length} stops delivered. The outcome is scored and arrival times update the ETA correction.`);
     setTimeout(refreshMemory, 300);
   }
   stopSeen = new Map([...stops].map(([k, [, s]]) => [k, s.status]));
@@ -961,9 +1064,11 @@ function noteChanges(st) {
 
 let opsLastOk = 0, opsFails = 0;
 function renderSync() {
-  const el = $("sync"), age = opsLastOk ? Math.round((Date.now() - opsLastOk) / 1000) : null;
-  el.dataset.tone = opsFails >= 3 ? "bad" : opsFails ? "warn" : age === null ? "" : "ok";
-  el.textContent = opsFails >= 3 ? "Offline · retrying" : opsFails ? "Retrying…" : age === null ? "Connecting…" : `Live · ${age < 5 ? "now" : age + " s ago"}`;
+  const el = $("sync");
+  el.className = opsFails >= 3 ? "bad" : opsFails ? "warn" : "";
+  el.textContent = opsFails >= 3 ? "Offline, retrying" : opsFails ? "Reconnecting" : opsLastOk
+    ? `Synced ${new Date(opsLastOk).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false })}` : "Connecting";
+  $("clock").textContent = `${new Date().toLocaleTimeString("en-GB", { timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit" })} IST`;
 }
 async function refreshOps() {
   try {
@@ -976,7 +1081,7 @@ async function refreshOps() {
 }
 setInterval(renderSync, 1000);
 
-// right column: one resource at a time, with counts and attention dots on the tabs
+// right rail: one resource at a time, with counts on the tabs
 function setSideTab(t) {
   document.querySelectorAll(".sidetabs [data-tab]").forEach(b => b.setAttribute("aria-selected", b.dataset.tab === t));
   document.querySelectorAll("#side [data-pane]").forEach(p => p.classList.toggle("off", p.dataset.pane !== t));
@@ -993,13 +1098,14 @@ try { setSideTab(localStorage.getItem("reliefroute-sidetab") || "fleet"); } catc
 
 $("howBtn").onclick = () => $("howDlg").showModal();
 $("howClose").onclick = () => $("howDlg").close();
-$("tryIt").onclick = () => { setMode("sim"); toast("Simulator: click Run 5 episodes, or pick a sample report and Run full episode."); };
+$("tryIt").onclick = () => { setMode("sim"); toast("Simulator: click Run 5 episodes, or load a sample and Run full episode."); };
 $("vSignIn").onclick = () => signIn();
 $("queueList").addEventListener("click", e => {
   if (!e.target.closest("[data-sample]")) return;
-  $("text").value = document.querySelector(".samples .tab").dataset.t;
+  $("composer").open = true;
+  $("text").value = document.querySelector(".sample").dataset.t;
   $("text").focus();
-  toast("Sample loaded. Click Add to incident queue.");
+  toast("Sample loaded. Add it to the incident queue.");
 });
 
 function attachMedia(fd) {
@@ -1013,22 +1119,21 @@ $("queue").onclick = async () => {
   fd.append("text", $("text").value);
   fd.append("source", "console");
   attachMedia(fd);
-  $("queue").disabled = true; $("queue").textContent = "Reading report…"; pipeBusy();
+  $("queue").disabled = true; $("queue").textContent = "Reading the report…"; pipeBusy();
   try {
     const r = await api("/api/reports", { method: "POST", body: fd });
     ev("INTAKE", "intake", `${esc(r.intake.summary)} <span class="sub">· ${esc(r.intake.language)}</span>` +
       (r.intake.hazards.length ? `<div class="sub">Hazards: ${r.intake.hazards.map(h => esc(h.label)).join(", ")}</div>` : ""));
     if (r.incidents.length || !r.merged.length)
-      ev("QUEUED", "good", r.incidents.map(i => `<div class="num">${esc(i.id)} ${esc(i.zone)} · ${i.qty} ${esc(i.item)} · urgency ${i.urgency}</div>`).join("") || "No supplies recognised in this report.");
+      ev("QUEUED", "good", r.incidents.map(i => `<div class="num">${esc(i.zone)} · ${i.qty} ${esc(i.item)} · urgency ${i.urgency}</div>`).join("") || "No supplies recognised in this report.");
     for (const i of r.merged)
-      ev("MERGED", "heal", `${esc(i.id)} ${esc(i.zone)} ${esc(i.item)} was already reported: now ${i.reports} reports for ${i.requested} units, one request, no second truck.`);
+      ev("MERGED", "heal", `${esc(i.zone)} ${esc(i.item)} was already reported: now ${i.reports} reports for ${i.requested} units, one request, no second truck.`);
     ev("TRACKING", "", `Reporter's status link: <a class="num" style="color:var(--text)" href="${esc(r.track_url)}" target="_blank">${esc(r.track_url.slice(0, 18))}…</a>`);
     for (const h of r.heals) { const [tag, cls] = healTag(h); ev(tag, cls, esc(h)); }
     noteChanges(r.ops); renderOps(r.ops, r.summary); updateAI(r.heals);
     $("image").value = ""; $("audio").value = ""; recBlob = null; showAttached();
-    $("pipe").classList.remove("busy"); [...$("pipe").children].forEach((s, k) => s.classList.toggle("on", k === 0));
-  } catch (e) { $("pipe").classList.remove("busy"); ev("ERROR", "bad", esc(e.message)); toast(e.message, { tone: "bad" }); }
-  finally { $("queue").disabled = false; $("queue").textContent = "Add to incident queue"; }
+  } catch (e) { ev("ERROR", "bad", esc(e.message)); toast(e.message, { tone: "bad" }); }
+  finally { pipeDone(); $("queue").disabled = false; $("queue").textContent = "Add to incident queue"; }
 };
 
 $("wave").onclick = async () => {
@@ -1039,16 +1144,15 @@ $("wave").onclick = async () => {
     opsBusy = false;
     noteChanges(r.ops); renderOps(r.ops, r.summary);
     ev(`WAVE ${w.n}`, "good", `<span class="sub">${esc(w.strategy)}</span> · ${esc(r.reasoning)}` +
-      r.routes.map(rt => `<div class="sub num">${esc(rt.id)} ${esc(rt.truck_id)}: ${rt.stops.map(s => `${esc(s.zone)} ${s.qty} ${esc(s.item)} ~${s.eta_min} min`).join(" → ")} · ${rt.km} km ${rt.source === "road" ? "by road" : "(estimate)"}</div>`).join("") +
-      r.plan.blocked.map(b => `<div class="num" style="color:var(--red)">${esc(b.need_id)}: no road route around ${b.hazards.map(esc).join(", ")}</div>`).join("") +
-      [...r.plan.no_truck, ...r.plan.stockout].map(b => `<div class="num" style="color:var(--amber)">${esc(b.need_id)}: no free truck or stock at ${esc(b.depot_id)}</div>`).join(""));
+      r.routes.map(rt => `<div class="sub num">${esc(rt.truck_id)}: ${rt.stops.map(s => `${esc(s.zone)} ${s.qty} ${esc(s.item)} ~${s.eta_min} min`).join(" → ")} · ${rt.km} km ${rt.source === "road" ? "by road" : "(estimate)"}</div>`).join("") +
+      r.plan.blocked.map(b => `<div class="num" style="color:var(--hazard)">${esc(b.need_id)}: no road route around ${b.hazards.map(esc).join(", ")}</div>`).join("") +
+      [...r.plan.no_truck, ...r.plan.stockout].map(b => `<div class="num" style="color:var(--signal)">${esc(b.need_id)}: no free truck or stock at ${esc(b.depot_id)}</div>`).join(""));
     for (const h of r.heals) { const [tag, cls] = healTag(h); ev(tag, cls, esc(h)); }
-    ev("STATUS", w.left_waiting ? "bad" : "good", `${w.routes} truck(s) out with ${w.units} units · ${w.left_waiting} incident(s) still waiting` +
-      `${w.road ? " · planned on real road distances" : " · planned on estimates"}. Each driver sees the route at their truck link (Fleet panel).`);
+    ev("STATUS", w.left_waiting ? "bad" : "good", `${w.routes} truck(s) out with ${w.units} units · ${w.left_waiting} request(s) still waiting` +
+      `${w.road ? " · planned on real road distances" : " · planned on estimates"}. Drivers see their routes at their truck links (Fleet).`);
     updateAI(r.heals);
-    await pipeRun(r.heals.length > 0, r.heals.length ? 4 : 2);
-  } catch (e) { $("pipe").classList.remove("busy"); ev("ERROR", "bad", esc(e.message)); toast(e.message, { tone: "bad" }); }
-  finally { opsBusy = false; $("wave").disabled = false; $("wave").textContent = "Dispatch wave"; }
+  } catch (e) { ev("ERROR", "bad", esc(e.message)); toast(e.message, { tone: "bad" }); }
+  finally { pipeDone(); opsBusy = false; $("wave").disabled = false; $("wave").textContent = "Dispatch wave"; }
 };
 
 $("sitrep").onclick = async () => {
@@ -1060,7 +1164,7 @@ $("sitrep").onclick = async () => {
     for (const h of r.heals) { const [tag, cls] = healTag(h); ev(tag, cls, esc(h)); }
     updateAI(r.heals);
     $("sitrepDlg").showModal();
-  } catch (e) { ev("ERROR", "bad", esc(e.message)); }
+  } catch (e) { ev("ERROR", "bad", esc(e.message)); toast(e.message, { tone: "bad" }); }
   finally { $("sitrep").disabled = false; $("sitrep").textContent = "Situation report"; }
 };
 $("sitrepCopy").onclick = async () => {
@@ -1082,7 +1186,7 @@ $("opsReset").onclick = async () => {
     const r = await api("/api/ops/reset", { method: "POST" });
     opsSeen = new Set(); stopSeen = null; routeSeen = null; renderOps(r.ops, r.summary);
     ev("NEW OP", "good", "New operation started: queue cleared, depots restocked, every truck has a new driver link.");
-  } catch (e) { ev("ERROR", "bad", esc(e.message)); }
+  } catch (e) { ev("ERROR", "bad", esc(e.message)); toast(e.message, { tone: "bad" }); }
 };
 
 // ---- resources -----------------------------------------------------------------------------------
@@ -1100,16 +1204,16 @@ $("addTruck").onclick = () => admin(() => postJSON("/api/ops/trucks", { depot_id
 $("restock").onclick = () => admin(() => postJSON("/api/ops/restock", { depot_id: $("rsDepot").value, item: $("rsItem").value,
   qty: +$("rsQty").value, note: $("rsNote").value }), `Logged +${$("rsQty").value} ${$("rsItem").value} at ${$("rsDepot").value}.`);
 $("pick").onclick = () => {
-  picking = true; $("map").parentElement.classList.add("picking");
+  picking = true; $("mapwrap").classList.add("picking");
   $("pickHint").textContent = "Now click the map where the depot is.";
-  $("map").scrollIntoView({ behavior: "smooth", block: "center" });
+  $("mapwrap").scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "center" });
 };
 $("map").addEventListener("click", e => {
   if (!picking) return;
   const b = $("map").getBoundingClientRect();
   const x = (e.clientX - b.left) / b.width * W, y = (e.clientY - b.top) / b.height * H;
   picked = { lat: B.latMax - y / H * (B.latMax - B.latMin), lng: B.lngMin + x / W * (B.lngMax - B.lngMin) };
-  picking = false; $("map").parentElement.classList.remove("picking");
+  picking = false; $("mapwrap").classList.remove("picking");
   $("addDepot").disabled = false;
   $("pickHint").textContent = `Location ${picked.lat.toFixed(4)}, ${picked.lng.toFixed(4)}. Name it and open the depot.`;
   drawOpsMap();
@@ -1127,8 +1231,8 @@ document.addEventListener("click", async e => {
   if (!b) return;
   const d = b.dataset;
   if (d.copy) {
-    try { await navigator.clipboard.writeText(d.copy); b.textContent = "copied"; } catch { b.textContent = "copy failed"; }
-    setTimeout(() => { b.textContent = "copy driver link"; }, 1500);
+    try { await navigator.clipboard.writeText(d.copy); b.textContent = "Copied"; } catch { b.textContent = "Copy failed"; }
+    setTimeout(() => { b.textContent = "Copy link"; }, 1500);
     return;
   }
   if (d.recall) {
@@ -1138,7 +1242,7 @@ document.addEventListener("click", async e => {
   else if (d.clear) admin(() => api(`/api/ops/hazards/${d.clear}/clear`, { method: "POST" }), `${d.clear} cleared: routes may use that road again.`);
   else if (d.close) {
     const why = prompt("Why close this request? (resolved locally, duplicate, false report…)");
-    if (why !== null) admin(() => postJSON(`/api/ops/incidents/${d.close}/close`, { reason: why }), `${d.close} closed.`);
+    if (why !== null) admin(() => postJSON(`/api/ops/incidents/${d.close}/close`, { reason: why }), `Request closed.`);
   }
 });
 
@@ -1148,13 +1252,17 @@ setInterval(() => { if (document.body.dataset.mode === "ops" && !document.hidden
 // ---- startup ------------------------------------------------------------------------------------
 api("/healthz").then(h => {
   aiModel = h.models[0];
-  if (h.llm) setAI(0, `Gemini · ${aiModel}`); else setAI(2, "AI key missing · rule-based backup");
+  const name = aiModel.replace(/^gemini-/, "Gemini ").replace(/-/g, " ").replace(/\b(flash|lite|pro|latest)\b/g, s => s[0].toUpperCase() + s.slice(1));
+  if (h.llm) setAI(0, `AI ${name}`); else setAI(2, "AI offline · rule-based backup");
 }).catch(() => setAI(2, "Server unreachable"));
 initAuth();
 refreshMemory();
+renderSync();
+try { if (localStorage.getItem("reliefroute-log-open")) { $("logpanel").classList.add("open"); $("logToggle").textContent = "Collapse"; $("logToggle").setAttribute("aria-expanded", "true"); } } catch {}
+new ResizeObserver(() => fitMap()).observe($("mapwrap"));
 let startMode = "ops";
 try { startMode = localStorage.getItem("reliefroute-mode") || "ops"; } catch {}
-$("map").innerHTML = baseMap();
+fitMap();
 setMode(startMode);
 </script>
 </body>
