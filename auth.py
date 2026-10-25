@@ -5,10 +5,11 @@ or reset. Field reporters and drivers never sign in: reporters use the open /rep
 the secret link of their truck.
 
     COORDINATOR_EMAILS    comma-separated Google accounts allowed to coordinate
-    FIREBASE_WEB_API_KEY  the web app's apiKey (public by design; identifies the Firebase project)
+    FIREBASE_WEB_API_KEY  the web app's apiKey (public by design), or the firebaseConfig snippet it is in
     FIREBASE_PROJECT_ID   optional; defaults to the project of FIREBASE_SERVICE_ACCOUNT
 """
 import os
+import re
 import threading
 import time
 
@@ -34,13 +35,23 @@ def enabled():
     return bool(allowed() and os.getenv("FIREBASE_WEB_API_KEY") and project_id())
 
 
+def _web_setting(name):
+    """A field of the Firebase web config. FIREBASE_WEB_API_KEY may hold the bare apiKey or the whole
+    firebaseConfig snippet copied from the Firebase console; both work."""
+    raw = os.getenv("FIREBASE_WEB_API_KEY", "").strip()
+    m = re.search(rf"""["']?{name}["']?\s*:\s*["']([^"']+)["']""", raw)
+    if m:
+        return m.group(1)
+    return raw if name == "apiKey" and "{" not in raw else None
+
+
 def web_config():
     """What the browser needs to start Firebase sign-in, or None when sign-in is off."""
     if not enabled():
         return None
     pid = project_id()
-    return {"apiKey": os.getenv("FIREBASE_WEB_API_KEY"), "projectId": pid,
-            "authDomain": os.getenv("FIREBASE_AUTH_DOMAIN") or f"{pid}.firebaseapp.com"}
+    return {"apiKey": _web_setting("apiKey"), "projectId": pid,
+            "authDomain": os.getenv("FIREBASE_AUTH_DOMAIN") or _web_setting("authDomain") or f"{pid}.firebaseapp.com"}
 
 
 def _verify(token):

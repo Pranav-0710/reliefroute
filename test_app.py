@@ -434,6 +434,13 @@ def test_coordinator_sign_in_guards_every_change(monkeypatch):
     assert c.get("/api/config").json()["firebase"] == {"apiKey": "web-key", "projectId": "relief-test",
                                                          "authDomain": "relief-test.firebaseapp.com"}
     assert c.get("/healthz").json()["coordinator_sign_in"] is True
+    snippet = """const firebaseConfig = {
+  apiKey: "AIza-from-snippet",
+  authDomain: "relief-test.firebaseapp.com",
+};"""
+    monkeypatch.setenv("FIREBASE_WEB_API_KEY", snippet)  # the whole snippet pasted from the Firebase console
+    assert c.get("/api/config").json()["firebase"]["apiKey"] == "AIza-from-snippet"
+    monkeypatch.setenv("FIREBASE_WEB_API_KEY", "web-key")
     assert c.post("/api/reports", data={"text": "50 food in Adyar"}).status_code == 200  # reporters never sign in
     for path in ("/api/ops/wave", "/api/ops/reset", "/api/ops/sitrep", "/api/memory/reset"):
         assert c.post(path).status_code == 401
