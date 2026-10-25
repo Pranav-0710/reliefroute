@@ -14,6 +14,7 @@
   :root { --bg:#f6f5f2; --card:#ffffff; --line:#d9d6cf; --text:#17191c; --muted:#5b6068;
           --ok:#1f7a4d; --warn:#9a5b00; --bad:#b42318; }
   * { box-sizing:border-box; }
+  [hidden] { display:none !important; }
   body { margin:0; background:var(--bg); color:var(--text); font:17px/1.5 "IBM Plex Sans", system-ui, sans-serif;
          padding:16px 16px calc(24px + env(safe-area-inset-bottom)); }
   main { max-width:520px; margin:0 auto; }
@@ -22,11 +23,16 @@
   .card { background:var(--card); border:2px solid var(--line); border-radius:10px; padding:14px; margin-top:12px; }
   .card.delivered { border-color:var(--ok); } .card.en_route { border-color:var(--text); } .card.bad { border-color:var(--bad); }
   .card h2 { font-size:18px; margin:0 0 4px; }
-  .steps { list-style:none; margin:10px 0 0; padding:0; }
-  .steps li { position:relative; padding:0 0 10px 22px; color:var(--muted); font-size:15px; }
-  .steps li::before { content:""; position:absolute; left:2px; top:6px; width:10px; height:10px; border-radius:50%; border:2px solid var(--line); background:var(--card); }
+  .steps { list-style:none; margin:12px 0 0; padding:0; }
+  .steps li { position:relative; padding:0 0 14px 30px; color:var(--muted); font-size:15px; }
+  .steps li::before { content:""; position:absolute; left:0; top:3px; width:16px; height:16px; border-radius:50%; border:2px solid #8a8780; background:var(--card); z-index:1; }
+  .steps li:not(:last-child)::after { content:""; position:absolute; left:8px; top:21px; bottom:0; width:2px; background:var(--line); }
   .steps li.done { color:var(--text); } .steps li.done::before { background:var(--ok); border-color:var(--ok); }
-  .steps li.now { color:var(--text); font-weight:600; } .steps li.now::before { border-color:var(--text); }
+  .steps li.done:not(:last-child)::after { background:var(--ok); }
+  .steps li.now { color:var(--text); font-weight:600; } .steps li.now::before { border-color:var(--text); border-width:3px; }
+  .steps li.warn { color:var(--warn); } .steps li.warn::before { border-color:var(--warn); background:#fbf1df; }
+  .refresh { min-height:48px; padding:0 18px; border:2px solid var(--text); background:none; border-radius:10px; font:600 15px "IBM Plex Sans", sans-serif; color:var(--text); cursor:pointer; }
+  :focus-visible { outline:3px solid #0b5cad; outline-offset:2px; }
   .note { font-size:14px; color:var(--muted); margin-top:4px; }
   footer { margin-top:22px; color:var(--muted); font-size:13px; }
   footer a { color:var(--muted); }
@@ -36,7 +42,9 @@
 <main>
   <h1>Your request</h1>
   <p class="sub" id="sub">Loading…</p>
-  <div id="list"></div>
+  <div id="list" aria-live="polite"></div>
+  <p class="note" id="updated"></p>
+  <button class="refresh" id="refresh" type="button">Check now</button>
   <footer>This page updates by itself. Bookmark it to check later. <a href="/report">Send another report</a></footer>
 </main>
 <script>
@@ -48,24 +56,26 @@ const clock = ts => new Date(ts * 1000).toLocaleString([], { hour: "2-digit", mi
 function card(i) {
   const coming = i.trips.filter(t => t.status === "pending");
   const eta = coming.length ? Math.min(...coming.map(t => t.eta_at)) : null;
+  const failed = i.trips.filter(t => t.status === "failed" || t.status === "blocked" || t.status === "skipped");
   const steps = [
     ["Received", true, clock(i.reported_at)],
+    ...(failed.length && i.status !== "delivered" ? [["A truck could not get through", "warn", "your request is back in the queue for the next truck"]] : []),
     ["Truck on the way", i.assigned > 0 || i.delivered > 0, eta ? `expected around ${clock(eta)}` : ""],
     ["Delivered", i.status === "delivered", i.delivered ? `${i.delivered} of ${i.requested} ${esc(i.item)} handed over` : ""],
   ];
   const now = steps.findIndex(s => !s[1]);
-  const failed = i.trips.filter(t => t.status === "failed" || t.status === "blocked" || t.status === "skipped");
   const headline = i.status === "closed" ? "Closed by the coordination desk"
     : i.status === "delivered" ? "Delivered" : i.assigned > 0 ? "Truck on the way" : "Waiting for a truck";
   return `<div class="card ${i.status === "delivered" ? "delivered" : i.assigned > 0 ? "en_route" : ""}">` +
     `<h2>${esc(i.zone)}: ${i.requested} ${esc(i.item)}</h2><div>${headline}</div>` +
-    (i.status === "closed" ? "" : `<ul class="steps">${steps.map(([t, done, d], k) =>
-      `<li class="${done ? "done" : k === now ? "now" : ""}">${t}${d ? ` · ${d}` : ""}</li>`).join("")}</ul>`) +
+    (i.status === "closed" ? `<p class="note">The desk closed this request, for example because it was resolved locally. If you still need help, send a new report.</p>`
+      : `<ol class="steps">${steps.map(([t, done, d], k) =>
+      `<li class="${done === "warn" ? "warn" : done ? "done" : k === now ? "now" : ""}"${k === now ? ' aria-current="step"' : ""}>${t}${d ? ` · ${d}` : ""}</li>`).join("")}</ol>`) +
     (i.reports > 1 ? `<div class="note">${i.reports} people reported this need; it is handled as one request.</div>` : "") +
-    (failed.length && i.status !== "delivered" ? `<div class="note">An earlier truck could not get through; your request is back in the queue for the next one.</div>` : "") +
     `</div>`;
 }
 
+let loaded = false;
 async function load() {
   try {
     const r = await fetch(`/api/track/${TOKEN}`);
@@ -74,8 +84,15 @@ async function load() {
     $("sub").textContent = `Sent ${clock(body.report.at)}` + (body.report.summary ? ` · "${body.report.summary}"` : "");
     $("list").innerHTML = body.incidents.map(card).join("") ||
       `<div class="card">No supplies were recognised in this report${body.report.hazards ? ", but the road hazard you reported is on the dispatch map" : ""}. The desk can still read your message.</div>`;
-  } catch (e) { $("sub").textContent = ""; $("list").innerHTML = `<div class="card bad"><h2>Cannot load this request</h2><p>${esc(e.message)}</p></div>`; }
+    loaded = true;
+    $("updated").textContent = `Updated ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+  } catch (e) {
+    // weak signal: keep the last good status on screen instead of replacing it with an error
+    if (loaded) { if (!$("updated").textContent.includes("retrying")) $("updated").textContent += " · no connection, retrying"; return; }
+    $("sub").textContent = ""; $("list").innerHTML = `<div class="card bad"><h2>Cannot load this request</h2><p>${esc(e.message)}</p></div>`;
+  }
 }
+$("refresh").onclick = load;
 load();
 setInterval(() => { if (!document.hidden) load(); }, 20000);
 </script>

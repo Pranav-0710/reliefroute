@@ -11,12 +11,14 @@
 <style>
   :root {
     --bg:#0f1113; --panel:#16191c; --line:#24282d; --line-2:#323840;
-    --text:#e7e5e2; --muted:#8b9199; --faint:#5c626a;
+    --text:#e7e5e2; --muted:#8b9199; --faint:#7b828b; --rule:#5c626a; --focus:#9db8da; --tap:32px;
+    --amber-bg:#2a2214; --red-bg:#2c1817; --green-bg:#15251c; --blue-bg:#18212c;
     --blue:#7a9cc6; --amber:#e3a33b; --red:#e0574f; --green:#5fb37f; --map:#0b0d0f;
     --mono:"IBM Plex Mono", ui-monospace, Consolas, monospace;
     --sans:"IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
   }
   * { box-sizing:border-box; }
+  [hidden] { display:none !important; }
   body { margin:0; background:var(--bg); color:var(--text); font:14px/1.5 var(--sans); -webkit-font-smoothing:antialiased; }
   button, input, textarea { font:inherit; color:inherit; }
 
@@ -29,7 +31,9 @@
   .dot.ok { background:var(--green); } .dot.warn { background:var(--amber); } .dot.bad { background:var(--red); }
 
   main { display:grid; grid-template-columns:320px minmax(0,1fr) 320px; gap:1px; background:var(--line); min-height:calc(100vh - 49px); }
-  @media (max-width:1150px) { main { grid-template-columns:1fr; } }
+  @media (min-width:1440px) { main { grid-template-columns:340px minmax(0,1fr) 340px; } }
+  @media (max-width:1149px) { main { grid-template-columns:320px minmax(0,1fr); } #side { grid-column:1 / -1; } }
+  @media (max-width:767px) { main { grid-template-columns:1fr; } :root { --tap:44px; } .brand span { display:none; } }
   section { background:var(--bg); padding:18px 20px; min-width:0; }
   h2 { font:500 11px var(--mono); letter-spacing:.08em; text-transform:uppercase; color:var(--muted); margin:0 0 10px; }
   .block + .block { margin-top:22px; padding-top:20px; border-top:1px solid var(--line); }
@@ -37,10 +41,10 @@
 
   .samples { display:flex; gap:4px; flex-wrap:wrap; align-items:center; margin-bottom:8px; font-size:12px; color:var(--muted); }
   .samples span { width:100%; font-size:11.5px; }
-  .tab { background:none; border:1px solid var(--line); padding:2px 9px; border-radius:4px; font-size:12px; cursor:pointer; }
+  .tab { background:none; border:1px solid var(--line); padding:2px 10px; min-height:var(--tap); border-radius:4px; font-size:12.5px; cursor:pointer; }
   .tab:hover { border-color:var(--line-2); background:var(--panel); }
   textarea { width:100%; min-height:120px; resize:vertical; background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:10px; line-height:1.45; }
-  textarea:focus { outline:none; border-color:var(--blue); }
+  textarea:focus { border-color:var(--blue); }
 
   .btn { display:inline-flex; align-items:center; gap:6px; background:transparent; border:1px solid var(--line-2); border-radius:6px; padding:6px 11px; font-size:13px; cursor:pointer; }
   .btn:hover { background:var(--panel); }
@@ -57,7 +61,7 @@
   .opsfig b { color:var(--text); font-weight:500; }
   #queueList { max-height:300px; overflow:auto; margin-bottom:4px; }
   .inc { border-left:3px solid var(--amber); padding:6px 9px; margin:5px 0; background:var(--panel); border-radius:4px; font-size:13px; }
-  .inc.delivered { border-color:var(--green); opacity:.7; }
+  .inc.delivered { border-color:var(--green); }
   .inc .meta { color:var(--muted); font-size:12px; }
   .inc .id { font-family:var(--mono); color:var(--muted); margin-right:4px; }
   dialog { background:var(--panel); color:var(--text); border:1px solid var(--line-2); border-radius:8px; padding:0; width:min(680px, 92vw); }
@@ -113,11 +117,8 @@
 
   /* live operations */
   #who a, .link { color:var(--text); background:none; border:0; padding:0; font:inherit; text-decoration:underline; text-underline-offset:2px; cursor:pointer; }
-  .link.small { font-size:12px; color:var(--muted); }
-  body.readonly [data-coord] { opacity:.4; pointer-events:none; }
-  .coordhint { display:none; font-size:12.5px; color:var(--amber); margin:8px 0 0; }
-  body.readonly .coordhint { display:block; }
-  .inc.en_route { border-color:var(--blue); } .inc.closed { border-color:var(--faint); opacity:.55; }
+  .link.small { font-size:12.5px; color:var(--muted); min-height:var(--tap); padding:4px 0; }
+  .inc.en_route { border-color:var(--blue); } .inc.closed { border-color:var(--rule); color:var(--muted); }
   .inc .top { display:flex; justify-content:space-between; gap:8px; align-items:baseline; }
   .badge { font:500 10.5px var(--mono); color:var(--muted); border:1px solid var(--line-2); border-radius:3px; padding:0 4px; margin-left:4px; }
   .rowlist > div { display:flex; justify-content:space-between; gap:10px; align-items:baseline; padding:7px 0; border-bottom:1px solid var(--line); font-size:13px; }
@@ -145,19 +146,100 @@
   .activity div { padding:4px 0; border-bottom:1px solid var(--line); }
   .activity time { font-family:var(--mono); color:var(--faint); margin-right:6px; }
   .map.picking svg { cursor:crosshair; }
+
+  /* ---- UX layer: focus, status, read-only, command bar, tabs, toasts, empty and loading states ---- */
+  :focus-visible { outline:2px solid var(--focus); outline-offset:2px; }
+  @media (prefers-reduced-motion:reduce) { *, *::before, *::after { animation:none !important; transition:none !important; scroll-behavior:auto !important; } }
+  .sr-only { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
+  label.btn:focus-within { outline:2px solid var(--focus); outline-offset:2px; }
+  .btn { min-height:var(--tap); }
+  .btn.danger { color:var(--red); border-color:#6b2e2b; } .btn.danger:hover { background:var(--red-bg); }
+  .btn.block { width:100%; justify-content:center; }
+  .btn[aria-disabled="true"] { border-style:dashed; background:transparent; color:var(--muted); cursor:not-allowed; }
+  .btn.primary[aria-disabled="true"] { border-color:var(--line-2); }
+  body.readonly details.more[data-coord] { display:none; }
+  .pill { display:inline-flex; align-items:center; gap:6px; height:24px; padding:0 9px; border:1px solid var(--line-2); border-radius:999px; font:500 11.5px/1 var(--mono); color:var(--text); white-space:nowrap; }
+  .pill::before { content:""; width:7px; height:7px; border-radius:50%; background:var(--faint); }
+  .pill[data-tone=ok]::before { background:var(--green); } .pill[data-tone=warn]::before { background:var(--amber); }
+  .pill[data-tone=bad]::before { background:var(--red); } .pill[data-tone=info]::before { background:var(--blue); }
+  .pill.plain::before { display:none; }
+  .status { align-items:center; gap:8px; }
+  .status .linkbtn { background:none; border:0; color:var(--text); font:12px var(--mono); text-decoration:underline; text-underline-offset:3px; cursor:pointer; padding:4px; }
+
+  .viewonly { display:flex; gap:12px; align-items:center; flex-wrap:wrap; padding:10px 20px; background:var(--blue-bg); border-bottom:1px solid var(--line); font-size:13.5px; }
+  .viewonly b { font-weight:600; }
+  .viewonly .btn { padding:4px 12px; }
+  .viewonly .btn.primary { width:auto; padding:4px 14px; }
+
+  #opsbar { grid-column:1 / -1; background:var(--bg); display:flex; gap:14px; align-items:center; flex-wrap:wrap; padding:12px 20px; position:sticky; top:0; z-index:5; border-bottom:1px solid var(--line); }
+  #opsbar .figs2 { display:flex; gap:6px; flex-wrap:wrap; flex:1; min-width:260px; }
+  .chip { display:flex; align-items:baseline; gap:6px; padding:4px 10px; border:1px solid var(--line); border-radius:6px; font-size:12px; color:var(--muted); }
+  .chip b { font:500 16px var(--mono); color:var(--text); }
+  .chip.warn b { color:var(--amber); }
+  #opsbar .act { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  #waveWhy { font-size:12.5px; color:var(--muted); max-width:300px; }
+  #opsbar .btn.primary { width:auto; padding:8px 20px; }
+  @media (max-width:767px) { #opsbar .act, #opsbar .btn.primary { width:100%; } #opsbar .btn.primary { justify-content:center; } }
+
+  .sidetabs { display:flex; flex-wrap:wrap; border:1px solid var(--line); border-radius:6px; overflow:hidden; margin-bottom:16px; }
+  .sidetabs button { flex:1; min-height:var(--tap); background:none; border:0; border-right:1px solid var(--line); color:var(--muted); font:500 12px var(--sans); cursor:pointer; padding:6px 4px; white-space:nowrap; }
+  .sidetabs button:last-child { border-right:0; }
+  .sidetabs button[aria-selected="true"] { background:var(--panel); color:var(--text); box-shadow:inset 0 -2px 0 var(--text); }
+  .sidetabs .n { font-family:var(--mono); color:var(--faint); margin-left:3px; }
+  .sidetabs .alert::after { content:""; display:inline-block; width:6px; height:6px; border-radius:50%; background:var(--red); margin-left:4px; vertical-align:2px; }
+  body[data-mode="sim"] .sidetabs { display:none; }
+  body[data-mode="ops"] #side [data-pane].off { display:none; }
+  body[data-mode="ops"] #side [data-pane] + [data-pane] { margin-top:0; padding-top:0; border-top:0; }
+
+  .inc .pill { height:20px; font-size:10.5px; }
+  .inc .wait[data-late=warn] { color:var(--amber); } .inc .wait[data-late=bad] { color:var(--red); font-weight:600; }
+  .urg.hi { color:var(--red); }
+  .grouphead { font:500 10.5px var(--mono); letter-spacing:.06em; text-transform:uppercase; color:var(--faint); margin:12px 0 2px; }
+  details.donegroup summary { cursor:pointer; font:500 10.5px var(--mono); letter-spacing:.06em; text-transform:uppercase; color:var(--faint); margin:12px 0 2px; min-height:24px; }
+  .empty-state { border:1px dashed var(--line-2); border-radius:6px; padding:14px; color:var(--muted); font-size:13px; }
+  .empty-state b { color:var(--text); font-weight:600; }
+  .empty-state ol { margin:8px 0 10px; padding-left:20px; } .empty-state li { margin:4px 0; }
+  .skel { height:48px; border-radius:4px; background:var(--panel); margin:5px 0; animation:pulse 1.4s ease-in-out infinite; }
+  .truck-alert { box-shadow:inset 3px 0 var(--red); padding-left:8px !important; }
+  td .lowtag { font-size:9.5px; margin-left:2px; }
+
+  .evgroup { border-bottom:1px solid var(--line-2); }
+  .evgroup:last-child { border-bottom:0; }
+  .toasts { position:fixed; right:16px; bottom:16px; display:grid; gap:8px; z-index:20; max-width:min(380px, calc(100vw - 32px)); }
+  .toast { display:flex; gap:12px; align-items:center; background:var(--panel); border:1px solid var(--line-2); border-left:3px solid var(--blue); border-radius:6px; padding:8px 10px 8px 12px; font-size:13px; box-shadow:0 8px 24px #0006; }
+  .toast span { flex:1; }
+  .toast[data-tone=bad] { border-left-color:var(--red); } .toast[data-tone=ok] { border-left-color:var(--green); }
+  .toast .btn { padding:2px 10px; }
+  #howDlg ol { margin:0; padding:16px 16px 16px 36px; line-height:1.6; } #howDlg li { margin:6px 0; }
 </style>
 </head>
 <body>
 <header>
   <div class="brand"><b>ReliefRoute</b><span>Flood-relief dispatch agent · Chennai</span></div>
   <div class="status">
+    <button class="linkbtn" id="howBtn" type="button">How it works</button>
+    <span class="pill" id="sync" data-show="ops" title="When the console last got fresh data from the server">Connecting…</span>
+    <span id="ai" class="pill">Gemini · checking</span>
+    <span class="pill" data-tone="info" title="MCP Streamable HTTP endpoint: other agents can call ReliefRoute's tools at /mcp">MCP /mcp</span>
     <span id="who"></span>
-    <span id="ai"><span class="dot"></span>Gemini · checking</span>
-    <span title="MCP Streamable HTTP endpoint exposing the agent's tools"><span class="dot ok"></span>MCP /mcp</span>
   </div>
 </header>
+<div class="viewonly" id="viewonly" role="status" hidden>
+  <span><b>View only.</b> You are watching the live operation. Dispatching and managing trucks needs a coordinator sign-in.</span>
+  <span>You can still send a report here or from <a href="/report" target="_blank" style="color:var(--text)">/report</a>, or play the whole loop yourself in the Simulator.</span>
+  <button class="btn" type="button" id="tryIt">Try the simulator</button>
+  <button class="btn primary" type="button" id="vSignIn">Coordinator sign-in</button>
+</div>
 <main>
-  <section>
+  <div id="opsbar" data-show="ops">
+    <div class="figs2" id="opsfig" aria-live="polite"></div>
+    <div class="act">
+      <span id="waveWhy"></span>
+      <button class="btn" id="sitrep" data-coord>Situation report</button>
+      <button class="btn primary" id="wave" data-coord>Dispatch wave</button>
+    </div>
+  </div>
+  <section id="colLeft">
     <div class="modes" role="tablist">
       <button class="mode" role="tab" data-mode="ops">Operations</button>
       <button class="mode" role="tab" data-mode="sim">Simulator</button>
@@ -172,14 +254,14 @@
       </div>
       <textarea id="text" placeholder="Type or paste a report in any language. You can also attach a photo or a voice note."></textarea>
       <div class="row">
-        <label class="btn"><input type="file" id="image" accept="image/*" hidden>Photo</label>
-        <label class="btn"><input type="file" id="audio" accept="audio/*" hidden>Audio file</label>
+        <label class="btn"><input type="file" id="image" accept="image/*" class="sr-only">Photo</label>
+        <label class="btn"><input type="file" id="audio" accept="audio/*" class="sr-only">Audio file</label>
         <button class="btn" id="rec" type="button">Record</button>
       </div>
       <div id="attached"></div>
       <div data-show="ops">
-        <button class="btn primary" id="queue" style="margin-top:14px">Add to incident queue</button>
-        <p class="hint" style="margin-top:8px">Field workers can report from a phone at <a href="/report" target="_blank" class="num" style="color:var(--text)">/report</a>. Their reports appear in the queue below.</p>
+        <button class="btn block" id="queue" style="margin-top:14px">Add to incident queue</button>
+        <p class="hint" style="margin-top:8px">Field workers report from a phone at <a href="/report" target="_blank" class="num" style="color:var(--text)">/report</a>. Their reports appear in the queue below within 5 seconds.</p>
       </div>
       <div data-show="sim">
         <label class="check"><input type="checkbox" id="chaos" checked><span>Simulate a road collapse during delivery<br><span class="hint">Tests whether the agent detects the failure and reroutes.</span></span></label>
@@ -189,15 +271,10 @@
     </div>
     <div class="block" data-show="ops">
       <h2>Incident queue</h2>
-      <div class="opsfig" id="opsfig"></div>
-      <div id="queueList"><div class="hint">No incidents yet. Add a report above or send one from /report.</div></div>
-      <button class="btn primary" id="wave" data-coord style="margin-top:12px">Dispatch wave</button>
-      <p class="hint" style="margin-top:8px">Plans every waiting incident onto the free trucks with real road routes. Each driver gets the route on their phone.</p>
-      <div class="row">
-        <button class="btn" id="sitrep" data-coord>Situation report</button>
-        <button class="btn" id="opsReset" data-coord>New operation</button>
+      <div id="queueList" aria-busy="true"><div class="skel"></div><div class="skel"></div><div class="skel"></div></div>
+      <div class="row" style="margin-top:22px">
+        <button class="btn danger" id="opsReset" data-coord>New operation…</button>
       </div>
-      <p class="coordhint">Read-only view. Sign in as a coordinator (top right) to dispatch and manage resources.</p>
     </div>
     <div class="block" data-show="sim">
       <h2>Training</h2>
@@ -233,11 +310,18 @@
     </div>
     <div class="map"><svg id="map" viewBox="0 0 600 560" role="img" aria-label="Map of Chennai with depots, requests and routes"></svg></div>
     <h2 style="margin-top:18px">Event log</h2>
-    <div class="log" id="log"><div class="empty">No activity yet. Choose a sample report and dispatch, or run training.</div></div>
+    <div class="log" id="log" role="log" aria-live="polite" aria-label="Event log, newest first"><div class="empty">No activity yet. Choose a sample report and dispatch, or run training.</div></div>
   </section>
 
-  <section>
-    <div class="block" data-show="ops">
+  <section id="side">
+    <div class="sidetabs" role="tablist" aria-label="Resources">
+      <button role="tab" data-tab="fleet" aria-selected="true">Fleet<span class="n" id="nFleet"></span></button>
+      <button role="tab" data-tab="stock" aria-selected="false">Depots<span class="n" id="nStock"></span></button>
+      <button role="tab" data-tab="hazards" aria-selected="false">Hazards<span class="n" id="nHaz"></span></button>
+      <button role="tab" data-tab="learning" aria-selected="false">Learning</button>
+      <button role="tab" data-tab="activity" aria-selected="false">Activity</button>
+    </div>
+    <div class="block" data-show="ops" data-pane="fleet" role="tabpanel">
       <h2>Fleet</h2>
       <div class="rowlist" id="fleet"></div>
       <details class="more" data-coord><summary>Add a truck</summary>
@@ -246,9 +330,10 @@
           <button class="btn" id="addTruck">Add</button></div>
       </details>
     </div>
-    <div class="block" data-show="ops">
+    <div class="block off" data-show="ops" data-pane="stock" role="tabpanel">
       <h2>Depots and stock</h2>
       <table class="stock" id="stock"></table>
+      <p class="hint" style="margin-top:6px">Amber numbers are below 100 units.</p>
       <details class="more" data-coord><summary>Log incoming supplies</summary>
         <div class="mini"><select id="rsDepot" aria-label="Depot"></select>
           <select id="rsItem" aria-label="Item"><option>water</option><option>food</option><option>medicine</option><option>blankets</option></select>
@@ -263,17 +348,17 @@
         <p class="hint" id="pickHint" style="margin-top:6px">Choose “Pick on map”, then click where the depot is.</p>
       </details>
     </div>
-    <div class="block" data-show="ops">
+    <div class="block off" data-show="ops" data-pane="hazards" role="tabpanel">
       <h2>Road hazards</h2>
       <div class="rowlist" id="hazards"></div>
     </div>
-    <div class="block" data-show="ops">
+    <div class="block off" data-show="ops" data-pane="learning" role="tabpanel">
       <h2>Learning from the field</h2>
       <div class="figs" id="fieldFigs"></div>
       <div class="rowlist" id="fieldStrat"></div>
       <p class="hint" style="margin-top:6px">Every closed route is scored on what drivers actually delivered. Arrival times correct future ETAs; failed and blocked stops become lessons.</p>
     </div>
-    <div class="block" data-show="ops">
+    <div class="block off" data-show="ops" data-pane="activity" role="tabpanel">
       <h2>Activity</h2>
       <div class="activity" id="activity"></div>
     </div>
@@ -293,12 +378,24 @@
       <div id="bandit"></div>
       <p class="hint" style="margin-top:8px">Mostly uses the best-scoring strategy, tries the others 20% of the time.</p>
     </div>
-    <div class="block">
+    <div class="block off" data-pane="learning">
       <h2>Lessons in memory</h2>
       <ol class="lessons" id="lessons"></ol>
     </div>
   </section>
 </main>
+<dialog id="howDlg" aria-labelledby="howTitle">
+  <div class="dhead"><h2 id="howTitle" style="margin:0">How ReliefRoute works</h2></div>
+  <ol>
+    <li><b>Report.</b> Field workers send text, a photo or a voice note in any language from <span class="num">/report</span>. Gemini turns it into requests: place, item, quantity, urgency. The same need reported twice becomes one request.</li>
+    <li><b>Plan.</b> A coordinator clicks <b>Dispatch wave</b>. The agent assigns every waiting request to free trucks with its best learned strategy (a neural policy trained with reinforcement learning), on real road distances that avoid reported floods.</li>
+    <li><b>Drive.</b> Each driver opens their truck's link on a phone, follows the road route and marks each stop delivered, failed or road blocked.</li>
+    <li><b>Learn.</b> A blocked road becomes a hazard that the next routes avoid, unserved relief goes back in the queue, and every finished route teaches the agent: field scores, an ETA correction and lessons for the planner.</li>
+  </ol>
+  <p class="hint" style="padding:0 16px 12px">No coordinator account? Open the <b>Simulator</b> tab and click <b>Run 5 episodes</b> to watch the agent plan, hit a collapsed bridge, recover and learn.</p>
+  <div class="dfoot"><button class="btn" id="howClose">Close</button></div>
+</dialog>
+<div class="toasts" id="toasts" aria-live="polite"></div>
 <dialog id="sitrepDlg" aria-labelledby="sitrepTitle">
   <div class="dhead"><h2 id="sitrepTitle" style="margin:0">Situation report</h2><span class="hint" id="sitrepBy"></span></div>
   <pre id="sitrepText"></pre>
@@ -389,11 +486,27 @@ function drawMap(res) {
 }
 
 // ---- event log -------------------------------------------------------------------
-function ev(tag, cls, html) {
-  const d = document.createElement("div");
+let evBatch = null;
+function ev(tag, cls, html) {  // events of one action form a group; the newest group is on top
   $("log").querySelector(".empty")?.remove();
+  if (!evBatch || !evBatch.isConnected) {
+    evBatch = document.createElement("div");
+    evBatch.className = "evgroup";
+    $("log").prepend(evBatch);
+    setTimeout(() => { evBatch = null; }, 0);
+    while ($("log").children.length > 60) $("log").lastElementChild.remove();
+  }
+  const d = document.createElement("div");
   d.className = "ev"; d.innerHTML = `<span class="tag ${cls}">${tag}</span><div>${html}</div>`;
-  $("log").appendChild(d);
+  evBatch.appendChild(d);
+}
+function toast(msg, { tone = "", action, onAction, ms = 5000 } = {}) {
+  const t = document.createElement("div");
+  t.className = "toast"; t.dataset.tone = tone;
+  t.innerHTML = `<span>${esc(msg)}</span>${action ? `<button class="btn" type="button">${esc(action)}</button>` : ""}`;
+  if (action) t.querySelector("button").onclick = () => { onAction(); t.remove(); };
+  $("toasts").append(t);
+  setTimeout(() => t.remove(), ms);
 }
 function healTag(h) {
   if (h.startsWith("ALERT")) return ["ALERT", "alert"];
@@ -405,7 +518,8 @@ function healTag(h) {
 function setAI(level, text) {  // only escalates within a session: a tripped breaker stays visible
   if (level < aiLevel) return;
   aiLevel = level;
-  $("ai").innerHTML = `<span class="dot ${["ok", "warn", "bad"][level]}"></span>${esc(text)}`;
+  $("ai").dataset.tone = ["ok", "warn", "bad"][level];
+  $("ai").textContent = text;
 }
 function updateAI(heals) {
   if (heals.some(h => /intake failed|Planner crashed|Reflection via Gemini failed/.test(h))) setAI(2, "AI down · rule-based backup");
@@ -506,7 +620,7 @@ $("go").onclick = async () => {
     renderEpisode(res); renderMemory(res.memory);
     await pipeRun(res.trace.some(t => t.info.blocked.length || t.info.new_hazards.length));
   } catch (e) { $("pipe").classList.remove("busy"); $("log").innerHTML = ""; ev("ERROR", "bad", esc(e.message)); }
-  finally { $("go").disabled = false; $("go").textContent = "Dispatch"; }
+  finally { $("go").disabled = false; $("go").textContent = "Run full episode"; }
 };
 
 $("train").onclick = async () => {
@@ -591,24 +705,35 @@ function loadScript(src) {
   return new Promise((ok, bad) => { const s = document.createElement("script"); s.src = src; s.onload = ok; s.onerror = bad; document.head.appendChild(s); });
 }
 
+function signIn() {
+  if (!fbAuth) { toast("Sign-in is still loading. Try again in a moment."); return; }
+  fbAuth.signInWithPopup(new firebase.auth.GoogleAuthProvider()).catch(err => toast(err.message, { tone: "bad" }));
+}
 function renderWho() {
-  const el = $("who"), u = fbAuth && fbAuth.currentUser;
-  document.body.classList.toggle("readonly", !me.coordinator);
+  const el = $("who"), u = fbAuth && fbAuth.currentUser, readonly = !me.coordinator;
+  document.body.classList.toggle("readonly", readonly);
+  document.querySelectorAll("[data-coord]").forEach(c => { if (readonly) c.setAttribute("aria-disabled", "true"); else c.removeAttribute("aria-disabled"); });
+  $("viewonly").hidden = !readonly;
   if (!me.signIn) {
-    el.innerHTML = `<span class="dot warn"></span>Open console · sign-in off`;
-    el.title = "Anyone with this link can dispatch. Configure coordinator sign-in to restrict it.";
+    el.innerHTML = `<span class="pill" data-tone="warn" title="Anyone with this link can dispatch. Configure coordinator sign-in to restrict it.">Open console · sign-in off</span>`;
   } else if (u) {
-    el.innerHTML = `<span class="dot ${me.coordinator ? "ok" : "bad"}"></span>${esc(u.email)}${me.coordinator ? "" : " · not a coordinator"} · <a href="#" id="signOut">sign out</a>`;
-    $("signOut").onclick = e => { e.preventDefault(); fbAuth.signOut(); };
+    el.innerHTML = `<span class="pill" data-tone="${me.coordinator ? "ok" : "bad"}">${esc(u.email)}${me.coordinator ? "" : " · view only"}</span> <button class="linkbtn" id="signOut" type="button">Sign out</button>`;
+    $("signOut").onclick = () => fbAuth.signOut();
+    if (!me.coordinator) $("viewonly").querySelector("b").textContent = `${u.email} is not on the coordinator list.`;
   } else {
-    el.innerHTML = `<a href="#" id="signIn">Coordinator sign-in</a>`;
-    $("signIn").onclick = e => {
-      e.preventDefault();
-      fbAuth.signInWithPopup(new firebase.auth.GoogleAuthProvider()).catch(err => ev("ERROR", "bad", esc(err.message)));
-    };
+    el.innerHTML = `<button class="linkbtn" id="signIn" type="button">Coordinator sign-in</button>`;
+    $("signIn").onclick = signIn;
+    $("viewonly").querySelector("b").textContent = "View only.";
   }
   if (ops) renderOps(ops, opsSummary);
 }
+// coordinator-only controls stay visible and focusable, but explain themselves instead of failing with 401
+document.addEventListener("click", e => {
+  const c = e.target.closest("[data-coord]");
+  if (!c || !document.body.classList.contains("readonly")) return;
+  e.preventDefault(); e.stopImmediatePropagation();
+  toast("This needs a coordinator sign-in. Judges: try the Simulator tab or send a report.", me.signIn ? { action: "Sign in", onAction: signIn } : {});
+}, true);
 
 async function initAuth() {
   let cfg = null;
@@ -642,33 +767,65 @@ function setMode(m) {
 }
 document.querySelectorAll(".mode").forEach(b => b.onclick = () => setMode(b.dataset.mode));
 
+const TONE = { waiting: "warn", en_route: "info", delivered: "ok", closed: "" };
+const STATUS = { waiting: "Waiting", en_route: "On a truck", delivered: "Delivered", closed: "Closed" };
 function incLine(i) {
-  const status = i.status === "waiting" ? `waiting ${mins(i.reported_at)} min${i.assigned ? ` · ${i.assigned} on a truck` : ""}`
-    : i.status === "en_route" ? `${i.assigned} on a truck` : i.status === "delivered" ? `delivered ${i.delivered}` : "closed";
+  const w = mins(i.reported_at), late = i.status === "waiting" ? (w >= 60 ? "bad" : w >= 30 ? "warn" : "") : "";
   const amount = i.status === "waiting" && i.qty !== i.requested ? `${i.qty} of ${i.requested}` : i.requested;
+  const detail = i.status === "waiting" ? (i.assigned ? `${i.assigned} already on a truck` : "")
+    : i.status === "en_route" ? `${i.assigned} on a truck` : i.status === "delivered" ? `${i.delivered} delivered` : "";
   const canClose = me.coordinator && i.status === "waiting" && !i.assigned;
-  return `<div class="inc ${i.status}"><div class="top"><div><span class="id">${esc(i.id)}</span><b>${esc(i.zone)}</b> · ${amount} ${esc(i.item)} · U${i.urgency}` +
+  return `<div class="inc ${i.status}"><div class="top"><div><span class="pill" data-tone="${TONE[i.status]}">${STATUS[i.status]}</span>` +
+    (i.status === "waiting" ? ` <span class="wait num" data-late="${late}">${w} min</span>` : "") + `</div>` +
+    (canClose ? `<button class="link small" data-close="${esc(i.id)}" aria-label="Close request ${esc(i.id)}">close</button>` : "") + `</div>` +
+    `<div><span class="id">${esc(i.id)}</span><b>${esc(i.zone)}</b> · ${amount} ${esc(i.item)} · <span class="urg ${i.urgency >= 4 ? "hi" : ""}">urgency ${i.urgency}/5</span>` +
     `${i.reports > 1 ? `<span class="badge">${i.reports} reports</span>` : ""}</div>` +
-    (canClose ? `<button class="link small" data-close="${esc(i.id)}">close</button>` : "") + `</div>` +
-    `<div class="meta">${status} · ${esc(i.source)}${i.located_by === "gps" ? " (GPS)" : ""}${i.note ? " · " + esc(i.note) : ""}</div></div>`;
+    `<div class="meta">${detail ? detail + " · " : ""}${esc(i.source)}${i.located_by === "gps" ? " (GPS)" : ""}${i.note ? " · " + esc(i.note) : ""}</div></div>`;
+}
+
+function emptyState() {
+  return `<div class="empty-state"><b>No incidents yet.</b> The full loop in three steps:<ol>
+    <li>Add a report: pick a sample above and click <b>Add to incident queue</b>, or open <a href="/report" target="_blank" style="color:var(--text)">/report</a> on a phone.</li>
+    <li>Click <b>Dispatch wave</b>: trucks get road routes around reported floods.</li>
+    <li>Open a driver link under <b>Fleet</b> and mark a stop delivered or road blocked. Watch the map, the log and <b>Learning</b> update.</li></ol>
+    <button class="btn" type="button" data-sample="0">Load a sample report</button></div>`;
 }
 
 function renderOps(st, s) {
   ops = st; opsSummary = s;
-  $("opsfig").innerHTML = `<b>${s.waiting}</b> waiting · <b>${s.en_route}</b> on trucks · <b>${s.units_delivered}</b> units delivered · ` +
-    `trucks <b>${s.trucks_out}</b> out, <b>${s.trucks_free}</b> free · longest wait <b>${s.longest_wait_min}</b> min`;
+  const chip = (n, label, warn) => `<span class="chip ${warn ? "warn" : ""}"><b>${n}</b>${label}</span>`;
+  $("opsfig").innerHTML = chip(s.waiting, "waiting", s.waiting) + chip(s.en_route, "on trucks") + chip(s.units_delivered, "units delivered") +
+    chip(`${s.trucks_free}/${s.trucks_free + s.trucks_out}`, "trucks free") + chip(`${s.longest_wait_min}m`, "longest wait", s.longest_wait_min >= 30);
+  $("waveWhy").textContent = !s.waiting ? "Nothing waiting to dispatch"
+    : !s.trucks_free ? "No free truck: recall a route or add a truck"
+    : `${s.waiting} waiting → ${s.trucks_free} free truck${s.trucks_free === 1 ? "" : "s"}`;
   const rank = { waiting: 0, en_route: 1, delivered: 2, closed: 3 };
   const list = [...st.incidents].sort((a, b) => rank[a.status] - rank[b.status] ||
     (rank[a.status] ? b.reported_at - a.reported_at : b.urgency - a.urgency || a.reported_at - b.reported_at));
-  $("queueList").innerHTML = list.length ? list.slice(0, 80).map(incLine).join("")
-    : '<div class="hint">No incidents yet. Add a report above or send one from /report.</div>';
+  const live = list.filter(i => rank[i.status] < 2), done = list.filter(i => rank[i.status] >= 2);
+  const head = (t, n) => n ? `<div class="grouphead">${t} (${n})</div>` : "";
+  $("queueList").innerHTML = !list.length && !st.routes.length ? emptyState()
+    : head("Waiting", live.filter(i => i.status === "waiting").length) + live.filter(i => i.status === "waiting").map(incLine).join("") +
+      head("On trucks", live.filter(i => i.status === "en_route").length) + live.filter(i => i.status === "en_route").map(incLine).join("") +
+      (done.length ? `<details class="donegroup"><summary>Done (${done.length})</summary>${done.slice(0, 60).map(incLine).join("")}</details>` : "");
+  $("queueList").setAttribute("aria-busy", "false");
+  const lowStock = st.depots.some(d => ITEMS.some(i => (d.stock[i] || 0) < 100));
+  const problem = st.routes.some(r => r.status === "active" && r.stops.some(x => x.status === "failed" || x.status === "blocked"));
+  const hz = st.hazards.filter(h => h.active).length;
+  $("nFleet").textContent = s.trucks_out ? ` ${s.trucks_out} out` : ""; $("nFleet").parentElement.classList.toggle("alert", problem);
+  $("nStock").textContent = ""; $("nStock").parentElement.classList.toggle("alert", lowStock);
+  $("nHaz").textContent = hz ? ` ${hz}` : ""; $("nHaz").parentElement.classList.toggle("alert", hz > 0);
   renderFleet(st); renderStock(st); renderHazards(st); renderActivity(st);
   if (document.body.dataset.mode === "ops" && !opsBusy) drawOpsMap();
 }
 
 function renderFleet(st) {
   const routes = Object.fromEntries(st.routes.map(r => [r.id, r]));
-  $("fleet").innerHTML = st.trucks.map(t => {
+  const nextEta = t => { const r = t.route_id && routes[t.route_id], n = r && r.stops.find(x => x.status === "pending"); return n ? r.created_at + n.eta_min * 60 : 0; };
+  const order = t => { const r = t.route_id && routes[t.route_id];
+    return r && r.stops.some(x => x.status === "failed" || x.status === "blocked") ? 0 : r ? 1 : t.status === "idle" ? 2 : 3; };
+  const trucks = [...st.trucks].sort((a, b) => order(a) - order(b) || nextEta(a) - nextEta(b));
+  $("fleet").innerHTML = trucks.map(t => {
     const r = t.route_id && routes[t.route_id];
     const done = r ? r.stops.filter(x => x.status !== "pending").length : 0;
     const next = r && r.stops.find(x => x.status === "pending");
@@ -680,7 +837,7 @@ function renderFleet(st) {
       `<a class="link small" href="${esc(link)}" target="_blank" rel="noopener">open</a>`);
     if (me.coordinator && r) acts.push(`<button class="link small" data-recall="${esc(r.id)}">recall</button>`);
     if (me.coordinator && !r) acts.push(`<button class="link small" data-service="${esc(t.id)}" data-on="${t.status === "out_of_service" ? 1 : 0}">${t.status === "out_of_service" ? "back in service" : "out of service"}</button>`);
-    return `<div><div><span class="num">${esc(t.id)}</span> <span class="st ${t.status}">${t.status.replace(/_/g, " ")}</span>` +
+    return `<div class="${order(t) === 0 ? "truck-alert" : ""}"><div><span class="num">${esc(t.id)}</span> <span class="st ${t.status}">${t.status.replace(/_/g, " ")}</span>` +
       `<div class="sub">${info}</div></div><div class="acts">${acts.join("")}</div></div>`;
   }).join("") || '<div class="hint">No trucks.</div>';
   const opts = st.depots.map(d => `<option value="${esc(d.id)}">${esc(d.id)} ${esc(d.name)}</option>`).join("");
@@ -690,7 +847,7 @@ function renderFleet(st) {
 function renderStock(st) {
   $("stock").innerHTML = `<tr><th>Depot</th>${ITEMS.map(i => `<th>${i}</th>`).join("")}</tr>` +
     st.depots.map(d => `<tr><td>${esc(d.name)} <span class="hint">${esc(d.id)}</span></td>` +
-      ITEMS.map(i => `<td class="${(d.stock[i] || 0) < 100 ? "low" : ""}">${d.stock[i] || 0}</td>`).join("") + `</tr>`).join("");
+      ITEMS.map(i => (d.stock[i] || 0) < 100 ? `<td class="low">${d.stock[i] || 0}<span class="sr-only"> (low)</span></td>` : `<td>${d.stock[i]}</td>`).join("") + `</tr>`).join("");
 }
 
 function renderHazards(st) {
@@ -787,13 +944,48 @@ function noteChanges(st) {
   routeSeen = new Map(st.routes.map(r => [r.id, r.status]));
 }
 
+let opsLastOk = 0, opsFails = 0;
+function renderSync() {
+  const el = $("sync"), age = opsLastOk ? Math.round((Date.now() - opsLastOk) / 1000) : null;
+  el.dataset.tone = opsFails >= 3 ? "bad" : opsFails ? "warn" : age === null ? "" : "ok";
+  el.textContent = opsFails >= 3 ? "Offline · retrying" : opsFails ? "Retrying…" : age === null ? "Connecting…" : `Live · ${age < 5 ? "now" : age + " s ago"}`;
+}
 async function refreshOps() {
   try {
     const r = await api("/api/ops");
+    opsLastOk = Date.now(); opsFails = 0;
     noteChanges(r.ops);
     renderOps(r.ops, r.summary);
-  } catch {}
+  } catch { opsFails++; }
+  renderSync();
 }
+setInterval(renderSync, 1000);
+
+// right column: one resource at a time, with counts and attention dots on the tabs
+function setSideTab(t) {
+  document.querySelectorAll(".sidetabs [data-tab]").forEach(b => b.setAttribute("aria-selected", b.dataset.tab === t));
+  document.querySelectorAll("#side [data-pane]").forEach(p => p.classList.toggle("off", p.dataset.pane !== t));
+  try { localStorage.setItem("reliefroute-sidetab", t); } catch {}
+}
+document.querySelectorAll(".sidetabs [data-tab]").forEach(b => b.onclick = () => setSideTab(b.dataset.tab));
+document.querySelector(".sidetabs").addEventListener("keydown", e => {  // arrow keys move between tabs
+  if (!["ArrowLeft", "ArrowRight"].includes(e.key)) return;
+  const tabs = [...document.querySelectorAll(".sidetabs [data-tab]")], i = tabs.indexOf(document.activeElement);
+  const next = tabs[(i + (e.key === "ArrowRight" ? 1 : tabs.length - 1)) % tabs.length];
+  next.focus(); setSideTab(next.dataset.tab);
+});
+try { setSideTab(localStorage.getItem("reliefroute-sidetab") || "fleet"); } catch { setSideTab("fleet"); }
+
+$("howBtn").onclick = () => $("howDlg").showModal();
+$("howClose").onclick = () => $("howDlg").close();
+$("tryIt").onclick = () => { setMode("sim"); toast("Simulator: click Run 5 episodes, or pick a sample report and Run full episode."); };
+$("vSignIn").onclick = () => signIn();
+$("queueList").addEventListener("click", e => {
+  if (!e.target.closest("[data-sample]")) return;
+  $("text").value = document.querySelector(".samples .tab").dataset.t;
+  $("text").focus();
+  toast("Sample loaded. Click Add to incident queue.");
+});
 
 function attachMedia(fd) {
   if ($("image").files[0]) fd.append("image", $("image").files[0]);
@@ -807,10 +999,8 @@ $("queue").onclick = async () => {
   fd.append("source", "console");
   attachMedia(fd);
   $("queue").disabled = true; $("queue").textContent = "Reading report…"; pipeBusy();
-  $("log").innerHTML = '<div class="empty">Reading the report…</div>';
   try {
     const r = await api("/api/reports", { method: "POST", body: fd });
-    $("log").innerHTML = "";
     ev("INTAKE", "intake", `${esc(r.intake.summary)} <span class="sub">· ${esc(r.intake.language)}</span>` +
       (r.intake.hazards.length ? `<div class="sub">Hazards: ${r.intake.hazards.map(h => esc(h.label)).join(", ")}</div>` : ""));
     if (r.incidents.length || !r.merged.length)
@@ -822,7 +1012,7 @@ $("queue").onclick = async () => {
     noteChanges(r.ops); renderOps(r.ops, r.summary); updateAI(r.heals);
     $("image").value = ""; $("audio").value = ""; recBlob = null; showAttached();
     $("pipe").classList.remove("busy"); [...$("pipe").children].forEach((s, k) => s.classList.toggle("on", k === 0));
-  } catch (e) { $("pipe").classList.remove("busy"); $("log").innerHTML = ""; ev("ERROR", "bad", esc(e.message)); }
+  } catch (e) { $("pipe").classList.remove("busy"); ev("ERROR", "bad", esc(e.message)); toast(e.message, { tone: "bad" }); }
   finally { $("queue").disabled = false; $("queue").textContent = "Add to incident queue"; }
 };
 
@@ -833,7 +1023,6 @@ $("wave").onclick = async () => {
     const w = r.wave;
     opsBusy = false;
     noteChanges(r.ops); renderOps(r.ops, r.summary);
-    $("log").innerHTML = "";
     ev(`WAVE ${w.n}`, "good", `<span class="sub">${esc(w.strategy)}</span> · ${esc(r.reasoning)}` +
       r.routes.map(rt => `<div class="sub num">${esc(rt.id)} ${esc(rt.truck_id)}: ${rt.stops.map(s => `${esc(s.zone)} ${s.qty} ${esc(s.item)} ~${s.eta_min} min`).join(" → ")} · ${rt.km} km ${rt.source === "road" ? "by road" : "(estimate)"}</div>`).join("") +
       r.plan.blocked.map(b => `<div class="num" style="color:var(--red)">${esc(b.need_id)}: no road route around ${b.hazards.map(esc).join(", ")}</div>`).join("") +
@@ -843,7 +1032,7 @@ $("wave").onclick = async () => {
       `${w.road ? " · planned on real road distances" : " · planned on estimates"}. Each driver sees the route at their truck link (Fleet panel).`);
     updateAI(r.heals);
     await pipeRun(r.heals.length > 0, r.heals.length ? 4 : 2);
-  } catch (e) { $("pipe").classList.remove("busy"); ev("ERROR", "bad", esc(e.message)); }
+  } catch (e) { $("pipe").classList.remove("busy"); ev("ERROR", "bad", esc(e.message)); toast(e.message, { tone: "bad" }); }
   finally { opsBusy = false; $("wave").disabled = false; $("wave").textContent = "Dispatch wave"; }
 };
 
@@ -877,7 +1066,7 @@ $("opsReset").onclick = async () => {
   try {
     const r = await api("/api/ops/reset", { method: "POST" });
     opsSeen = new Set(); stopSeen = null; routeSeen = null; renderOps(r.ops, r.summary);
-    $("log").innerHTML = '<div class="empty">New operation started. Depots restocked.</div>';
+    ev("NEW OP", "good", "New operation started: queue cleared, depots restocked, every truck has a new driver link.");
   } catch (e) { ev("ERROR", "bad", esc(e.message)); }
 };
 
@@ -886,9 +1075,9 @@ async function admin(call, msg) {
   try {
     const r = await call();
     noteChanges(r.ops); renderOps(r.ops, r.summary);
-    if (msg) ev("RESOURCES", "good", esc(msg));
+    if (msg) { ev("RESOURCES", "good", esc(msg)); toast(msg, { tone: "ok" }); }
     return true;
-  } catch (e) { ev("ERROR", "bad", esc(e.message)); return false; }
+  } catch (e) { ev("ERROR", "bad", esc(e.message)); toast(e.message, { tone: "bad" }); return false; }
 }
 
 $("addTruck").onclick = () => admin(() => postJSON("/api/ops/trucks", { depot_id: $("truckDepot").value, capacity: +$("truckCap").value }),

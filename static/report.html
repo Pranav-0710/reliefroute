@@ -14,6 +14,7 @@
   :root { --bg:#f6f5f2; --card:#ffffff; --line:#d9d6cf; --text:#17191c; --muted:#5b6068;
           --ok:#1f7a4d; --warn:#9a5b00; --bad:#b42318; --accent:#17191c; }
   * { box-sizing:border-box; }
+  [hidden] { display:none !important; }
   body { margin:0; background:var(--bg); color:var(--text); font:17px/1.5 "IBM Plex Sans", system-ui, sans-serif;
          padding:16px 16px calc(24px + env(safe-area-inset-bottom)); }
   main { max-width:520px; margin:0 auto; }
@@ -22,7 +23,11 @@
   label.field { display:block; font-weight:600; margin:0 0 6px; }
   textarea { width:100%; min-height:150px; font:inherit; padding:12px; border:2px solid var(--line); border-radius:10px;
              background:var(--card); color:var(--text); resize:vertical; }
-  textarea:focus { outline:none; border-color:var(--text); }
+  textarea:focus { border-color:var(--text); }
+  :focus-visible { outline:3px solid #0b5cad; outline-offset:2px; }
+  .tile:focus-within { outline:3px solid #0b5cad; outline-offset:2px; }
+  .sr-only { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
+  @media (prefers-reduced-motion:reduce) { * { scroll-behavior:auto !important; transition:none !important; } }
   .hint { color:var(--muted); font-size:14px; margin:6px 0 0; }
   .grid { display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; margin:14px 0; }
   .tile { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px; min-height:76px;
@@ -63,15 +68,15 @@
     <p class="hint">Any language is fine: English, தமிழ், Tanglish, हिन्दी. A photo or voice note works too.</p>
 
     <div class="grid">
-      <label class="tile" id="photoTile"><input type="file" id="photo" accept="image/*" capture="environment" hidden>Photo<small id="photoState">Camera</small></label>
-      <button type="button" class="tile" id="recTile">Voice<small id="recState">Tap to record</small></button>
-      <button type="button" class="tile" id="gpsTile">Location<small id="gpsState">Share GPS</small></button>
+      <label class="tile" id="photoTile"><input type="file" id="photo" accept="image/*" capture="environment" class="sr-only">Photo<small id="photoState">Camera</small></label>
+      <button type="button" class="tile" id="recTile" aria-pressed="false">Voice<small id="recState">Tap to record</small></button>
+      <button type="button" class="tile" id="gpsTile" aria-pressed="false">Location<small id="gpsState">Share GPS</small></button>
     </div>
 
     <button class="send" id="send" type="submit">Send report</button>
   </form>
 
-  <div id="result"></div>
+  <div id="result" aria-live="polite"></div>
   <div id="mine" class="mine"></div>
 
   <footer>Location is used only to place your report on the dispatch map. <a href="/">Coordinator console</a></footer>
@@ -80,7 +85,8 @@
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const DRAFT = "reliefroute-report-draft";
-let recBlob = null, recorder = null, coords = null;
+let recBlob = null, recorder = null, coords = null, locating = null;
+const smooth = () => (matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth");
 
 try { $("text").value = localStorage.getItem(DRAFT) || ""; } catch {}
 $("text").addEventListener("input", () => { try { localStorage.setItem(DRAFT, $("text").value); } catch {} });
@@ -94,12 +100,16 @@ $("photo").onchange = () => {
 $("gpsTile").onclick = () => {
   if (!navigator.geolocation) { $("gpsState").textContent = "Not available"; return; }
   $("gpsState").textContent = "Locating…";
-  navigator.geolocation.getCurrentPosition(p => {
+  locating = new Promise(done => navigator.geolocation.getCurrentPosition(p => {
     coords = { lat: p.coords.latitude, lng: p.coords.longitude };
-    $("gpsTile").classList.add("on");
-    $("gpsState").textContent = `±${Math.round(p.coords.accuracy)} m`;
-  }, () => { coords = null; $("gpsTile").classList.remove("on"); $("gpsState").textContent = "Not shared"; },
-  { enableHighAccuracy: true, timeout: 15000 });
+    $("gpsTile").classList.add("on"); $("gpsTile").setAttribute("aria-pressed", "true");
+    $("gpsState").textContent = `Shared · ±${Math.round(p.coords.accuracy)} m`;
+    done();
+  }, err => {
+    coords = null; $("gpsTile").classList.remove("on"); $("gpsTile").setAttribute("aria-pressed", "false");
+    $("gpsState").textContent = err && err.code === 1 ? "Blocked in settings" : "Not found";
+    done();
+  }, { enableHighAccuracy: true, timeout: 15000 })).finally(() => { locating = null; });
 };
 
 // Browsers record webm/ogg; Gemini reliably accepts WAV, so convert to 16 kHz mono PCM.
@@ -131,7 +141,7 @@ $("recTile").onclick = async () => {
       stream.getTracks().forEach(t => t.stop());
       const raw = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
       try { recBlob = await toWav(raw); } catch { recBlob = raw; }
-      $("recTile").classList.remove("rec"); $("recTile").classList.add("on");
+      $("recTile").classList.remove("rec"); $("recTile").classList.add("on"); $("recTile").setAttribute("aria-pressed", "true");
       $("recState").textContent = `${Math.max(1, Math.round(recBlob.size / 32000))} s recorded`;
     };
     recorder.start();
@@ -154,26 +164,30 @@ function showMine() {
 }
 showMine();
 
-function show(cls, html) { $("result").innerHTML = `<div class="card ${cls}">${html}</div>`; $("result").scrollIntoView({ behavior: "smooth" }); }
+function show(cls, html) { $("result").innerHTML = `<div class="card ${cls}">${html}</div>`; $("result").scrollIntoView({ behavior: smooth() }); }
 
 $("form").onsubmit = async e => {
   e.preventDefault();
-  if (recorder && recorder.state === "recording") { show("bad", "<h2>Stop the recording first</h2>"); return; }
+  if (recorder && recorder.state === "recording") { show("bad", "<h2>Stop the recording first</h2><p>Tap Voice again to stop.</p>"); return; }
+  if (!$("text").value.trim() && !$("photo").files[0] && !recBlob) { show("bad", "<h2>Nothing to send yet</h2><p>Type what is needed, or add a photo or a voice note.</p>"); $("text").focus(); return; }
+  if (!navigator.onLine) { show("bad", "<h2>No signal</h2><p>Your text is saved on this phone. Send again when you have signal.</p>"); return; }
+  if (locating) { $("send").disabled = true; $("send").textContent = "Getting your location…"; await locating; }
   const fd = new FormData();
   fd.append("text", $("text").value);
   fd.append("source", "phone");
   if (coords) { fd.append("lat", coords.lat); fd.append("lng", coords.lng); }
   if ($("photo").files[0]) fd.append("image", $("photo").files[0]);
   if (recBlob) fd.append("audio", recBlob, recBlob.type === "audio/wav" ? "voice.wav" : "voice.webm");
-  $("send").disabled = true; $("send").textContent = "Sending…";
+  $("send").disabled = true; $("send").textContent = "Sending… reading your report takes about 15 s";
+  const abort = new AbortController(), timer = setTimeout(() => abort.abort(), 45000);
   try {
-    const r = await fetch("/api/reports", { method: "POST", body: fd });
+    const r = await fetch("/api/reports", { method: "POST", body: fd, signal: abort.signal });
     const body = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(body.detail || `Server error ${r.status}`);
-    const items = body.incidents.map(i => `<li>${esc(i.zone)}: ${i.qty} ${esc(i.item)}, urgency ${i.urgency}${i.located_by === "gps" ? " · placed by GPS" : ""}</li>`).join("") +
+    const items = body.incidents.map(i => `<li>${esc(i.zone)}: ${i.qty} ${esc(i.item)}, urgency ${i.urgency} of 5${i.located_by === "gps" ? " · placed by your GPS" : ""}</li>`).join("") +
       body.merged.map(i => `<li>${esc(i.zone)}: ${esc(i.item)} was already reported by others (${i.reports} reports); yours is added to it</li>`).join("");
     const n = body.incidents.length + body.merged.length;
-    show("ok", `<h2>Received · ${n} request(s)</h2>` +
+    show("ok", `<h2>Received · ${n} request${n === 1 ? "" : "s"}</h2>` +
       (items ? `<ul>${items}</ul>` : `<p>No specific supplies were recognised. The desk can still read your message.</p>`) +
       (body.intake.hazards.length ? `<p>Road hazards noted: ${body.intake.hazards.map(h => esc(h.label)).join(", ")}</p>` : "") +
       `<a class="track" href="${esc(body.track_url)}">Track this request</a>` +
@@ -182,13 +196,16 @@ $("form").onsubmit = async e => {
     try { localStorage.removeItem(DRAFT); } catch {}
     $("again").onclick = () => {
       $("form").reset(); $("text").value = ""; recBlob = null; coords = null; $("result").innerHTML = "";
-      ["photoTile", "recTile", "gpsTile"].forEach(id => $(id).classList.remove("on"));
+      ["photoTile", "recTile", "gpsTile"].forEach(id => { $(id).classList.remove("on"); $(id).removeAttribute("aria-pressed"); });
+      $("recTile").setAttribute("aria-pressed", "false"); $("gpsTile").setAttribute("aria-pressed", "false");
       $("photoState").textContent = "Camera"; $("recState").textContent = "Tap to record"; $("gpsState").textContent = "Share GPS";
-      window.scrollTo({ top: 0, behavior: "smooth" });
+      window.scrollTo({ top: 0, behavior: smooth() }); $("text").focus();
     };
   } catch (err) {
-    show("bad", `<h2>Not sent</h2><p>${esc(err.message)}</p><p>Your text is saved on this phone. Try again when you have signal.</p>`);
-  } finally { $("send").disabled = false; $("send").textContent = "Send report"; }
+    const slow = err.name === "AbortError";
+    show("bad", `<h2>Not sent</h2><p>${slow ? "The connection is too slow right now." : esc(err.message)}</p>` +
+      `<p>Your text is saved on this phone. Try again when you have signal.${$("photo").files[0] || recBlob ? " Your photo and voice note are still attached while this page stays open." : ""}</p>`);
+  } finally { clearTimeout(timer); $("send").disabled = false; $("send").textContent = "Send report"; }
 };
 </script>
 </body>

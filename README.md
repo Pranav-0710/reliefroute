@@ -74,14 +74,16 @@ The console has two tabs: **Operations** (a live relief operation) and **Simulat
 **Operations** (a laptop for the console, a phone for the field)
 1. **Report.** Open https://reliefroute.vercel.app/report on a phone, type a request (any language), share your location and send. It appears in the console's **Incident queue** within 5 seconds, tagged `PHONE`. The phone shows a **Track this request** link.
 2. **Report the same need again.** Send a second report for the same item in the same area. It is merged (`MERGED`, "2 reports"), not queued twice.
-3. **Dispatch.** Add one or two sample reports from the console, then click **Dispatch wave**. Each truck with stops gets a route on real roads (green line on the map, `WAVE` in the log). The stock leaves the depot, and the truck shows **on route** in the **Fleet** panel.
+3. **Dispatch.** Add one or two sample reports from the console, then click **Dispatch wave**. Each truck with stops gets a route on real roads (green line on the map, `WAVE` in the log). The stock leaves the depot, and the truck shows **on route** in the **Fleet** tab.
 4. **Drive.** In **Fleet**, open a truck's driver link (or copy it to a phone). The driver sees the road route and the stops in order.
-   - Tap **Road blocked** on one stop. The console logs `BLOCKED` and `REROUTE`, and the road appears under **Road hazards**.
+   - On one truck, tap **Problem at this stop… → Road blocked**. Every action waits 6 seconds with an **Undo** button before it is sent. The console logs `BLOCKED` and `REROUTE`, and the road appears in the **Hazards** tab.
    - Tap **Delivered** on the others. The console logs `DRIVER`, then `LEARN` when the route closes.
 5. **Recover.** Click **Dispatch wave** again. The blocked request is routed around the new hazard; its route is longer than before.
 6. **Follow up.** Open the reporter's tracking link to see "Truck on the way" with an ETA. Click **Situation report** for a Gemini briefing from the live data.
 
-Under **Depots and stock** you can log incoming supplies or open a new depot by clicking the map. **Fleet** adds trucks, takes them out of service and recalls routes.
+In the **Depots** tab you can log incoming supplies or open a new depot by clicking the map. **Fleet** adds trucks, takes them out of service and recalls routes.
+
+Without a coordinator sign-in the console is view only: it says so at the top, every coordinator control explains itself when clicked, and **Try the simulator** opens the tab where anyone can watch the agent plan, recover and learn. **How it works** (top right) explains the loop in four steps.
 
 **Simulator**
 1. Under **Training**, click **Run 5 episodes**. Click it a second time.

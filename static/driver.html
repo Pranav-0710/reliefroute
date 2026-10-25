@@ -11,61 +11,227 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet">
 <style>
-  /* Light, high-contrast theme: drivers read this in a cab, often in daylight. */
-  :root { --bg:#f6f5f2; --card:#ffffff; --line:#d9d6cf; --text:#17191c; --muted:#5b6068;
-          --ok:#1f7a4d; --warn:#9a5b00; --bad:#b42318; }
+  /* Light, high-contrast theme: drivers read this in a cab, often in daylight, one-handed. */
+  :root { --bg:#f6f5f2; --card:#ffffff; --line:#d9d6cf; --line-strong:#8a8780; --text:#17191c; --muted:#5b6068;
+          --ok:#1f7a4d; --warn:#9a5b00; --bad:#b42318; --info:#0b5cad;
+          --ok-bg:#e7f2eb; --warn-bg:#fbf1df; --bad-bg:#fbeae8; --focus:#0b5cad;
+          --r:10px; --tap:48px; --tap-lg:56px; }
   * { box-sizing:border-box; }
+  [hidden] { display:none !important; }
   body { margin:0; background:var(--bg); color:var(--text); font:17px/1.5 "IBM Plex Sans", system-ui, sans-serif;
-         padding:16px 16px calc(24px + env(safe-area-inset-bottom)); }
+         padding:16px 16px calc(96px + env(safe-area-inset-bottom)); }
   main { max-width:560px; margin:0 auto; }
+  :focus-visible { outline:3px solid var(--focus); outline-offset:2px; }
+  @media (prefers-reduced-motion:reduce) { *, *::before, *::after { transition:none !important; animation:none !important; } }
+  .top { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; }
   h1 { font-size:20px; margin:4px 0 2px; }
-  .sub { color:var(--muted); font-size:14px; margin:0 0 14px; }
+  .sub { color:var(--muted); font-size:14px; margin:0 0 10px; }
   .mono { font-family:"IBM Plex Mono", ui-monospace, monospace; }
-  .map { background:#eef0ec; border:2px solid var(--line); border-radius:10px; overflow:hidden; }
-  .map svg { display:block; width:100%; height:auto; }
-  .facts { display:flex; gap:14px; flex-wrap:wrap; font-size:14px; color:var(--muted); margin:8px 0 4px; }
-  .facts b { color:var(--text); font-weight:600; }
-  .stop { background:var(--card); border:2px solid var(--line); border-radius:10px; padding:14px; margin-top:12px; }
+  .pill { display:inline-flex; align-items:center; gap:6px; min-height:28px; padding:0 10px; border:2px solid var(--line);
+          border-radius:999px; font:500 13px "IBM Plex Mono", monospace; white-space:nowrap; background:var(--card); }
+  .pill::before { content:""; width:8px; height:8px; border-radius:50%; background:var(--muted); }
+  .pill[data-tone=ok]::before { background:var(--ok); } .pill[data-tone=warn]::before { background:var(--warn); }
+  .pill[data-tone=bad] { border-color:var(--bad); color:var(--bad); } .pill[data-tone=bad]::before { background:var(--bad); }
+  .pill[data-tone=info]::before { background:var(--info); }
+  .progress { height:6px; background:var(--line); border-radius:3px; overflow:hidden; margin:0 0 14px; }
+  .progress i { display:block; height:100%; background:var(--ok); }
+
+  .stop { background:var(--card); border:2px solid var(--line); border-radius:var(--r); padding:14px; margin-top:12px; }
   .stop.next { border-color:var(--text); }
-  .stop.delivered { border-color:var(--ok); opacity:.75; }
-  .stop.failed, .stop.blocked, .stop.skipped { border-color:var(--bad); opacity:.75; }
-  .stop h2 { font-size:18px; margin:0; display:flex; justify-content:space-between; gap:8px; }
-  .stop h2 small { font-weight:500; color:var(--muted); font-size:14px; white-space:nowrap; }
-  .stop .what { font-size:16px; margin:4px 0 2px; }
-  .stop .state { font-weight:600; font-size:15px; margin-top:6px; }
-  .state.delivered { color:var(--ok); } .state.failed, .state.blocked, .state.skipped { color:var(--bad); }
-  .acts { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:12px; }
-  .acts button, .acts a { min-height:52px; border-radius:10px; font:600 16px "IBM Plex Sans", sans-serif; cursor:pointer;
-                          display:flex; align-items:center; justify-content:center; text-decoration:none; }
-  .primary { grid-column:1 / -1; background:var(--ok); color:#fff; border:0; }
-  .plain { background:none; border:2px solid var(--text); color:var(--text); }
-  .danger { background:none; border:2px solid var(--bad); color:var(--bad); }
-  .detail { grid-column:1 / -1; display:none; gap:8px; }
-  .detail.open { display:grid; }
-  .detail input { width:100%; min-height:48px; font:inherit; padding:8px 12px; border:2px solid var(--line); border-radius:10px; }
-  .detail label { font-size:14px; color:var(--muted); }
-  .card { background:var(--card); border:2px solid var(--line); border-radius:10px; padding:14px; margin-top:14px; }
-  .card.ok { border-color:var(--ok); } .card.bad { border-color:var(--bad); }
-  .card h2 { font-size:17px; margin:0 0 6px; }
+  .stop h2, .stop h3 { margin:0; display:flex; justify-content:space-between; gap:8px; align-items:baseline; }
+  .stop h2 { font-size:20px; } .stop h3 { font-size:17px; }
+  .stop small { font-weight:500; color:var(--muted); font-size:14px; white-space:nowrap; }
+  .what { font-size:17px; margin:4px 0 0; }
+  .stop.done.ok { background:var(--ok-bg); border-color:var(--ok); }
+  .stop.done.bad { background:var(--bad-bg); border-color:var(--bad); }
+  .stop.done svg { flex:none; margin-right:6px; vertical-align:-3px; }
+  .state { font-weight:600; font-size:15px; margin-top:4px; }
+  .stop.done.ok .state { color:var(--ok); } .stop.done.bad .state { color:var(--bad); }
+  .group { font-size:14px; color:var(--muted); font-weight:600; margin:22px 0 0; }
+
+  .acts { display:grid; gap:10px; margin-top:14px; }
+  .btn { min-height:var(--tap); border-radius:var(--r); font:600 16px "IBM Plex Sans", sans-serif; cursor:pointer;
+         display:flex; align-items:center; justify-content:center; text-align:center; text-decoration:none; padding:6px 12px; }
+  .btn.big { min-height:var(--tap-lg); font-size:17px; }
+  .btn:disabled { opacity:.55; cursor:progress; }
+  .primary { background:var(--ok); color:#fff; border:0; }
+  .plain { background:var(--card); border:2px solid var(--text); color:var(--text); }
+  .danger { background:var(--card); border:2px solid var(--bad); color:var(--bad); }
+  .dangerfill { background:var(--bad); color:#fff; border:0; }
+  .sep { height:14px; border-bottom:1px solid var(--line); margin-bottom:6px; }
+  .detail { display:grid; gap:8px; padding:12px; border:2px dashed var(--line-strong); border-radius:var(--r); }
+  .detail.two { grid-template-columns:1fr 1fr; }
+  .detail input { width:100%; min-height:var(--tap); font:inherit; padding:8px 12px; border:2px solid var(--line-strong); border-radius:var(--r); background:var(--card); }
+  .detail label { font-size:15px; }
+  .link { background:none; border:0; padding:10px 0 2px; min-height:var(--tap); font:500 15px "IBM Plex Sans", sans-serif;
+          color:var(--text); text-decoration:underline; text-underline-offset:3px; cursor:pointer; }
+
+  details.mapbox { margin-top:14px; }
+  details.mapbox summary { cursor:pointer; min-height:var(--tap); display:flex; align-items:center; font-weight:600; font-size:15px; }
+  .map { background:#eef0ec; border:2px solid var(--line); border-radius:var(--r); overflow:hidden; }
+  .map svg { display:block; width:100%; height:auto; max-height:340px; }
+  .fine { font-size:13.5px; color:var(--muted); margin:6px 0 0; }
+
+  .card { background:var(--card); border:2px solid var(--line); border-radius:var(--r); padding:14px; margin-top:12px; }
+  .card.ok { border-color:var(--ok); background:var(--ok-bg); } .card.bad { border-color:var(--bad); background:var(--bad-bg); }
+  .card h2 { font-size:17px; margin:0 0 4px; } .card p { margin:4px 0 0; }
+
+  /* the undo window and confirmations sit at the bottom, where the driver's thumb is */
+  .dock { position:fixed; left:0; right:0; bottom:0; padding:10px 16px calc(10px + env(safe-area-inset-bottom)); pointer-events:none; }
+  .dock > div { max-width:560px; margin:0 auto; pointer-events:auto; display:flex; gap:12px; align-items:center;
+                background:var(--text); color:#fff; border-radius:var(--r); padding:10px 10px 10px 14px; box-shadow:0 6px 24px #0003; }
+  .dock span { flex:1; font-size:15px; line-height:1.35; }
+  .dock button { min-height:var(--tap-lg); min-width:96px; border-radius:8px; border:2px solid #fff; background:none; color:#fff;
+                 font:600 17px "IBM Plex Sans", sans-serif; cursor:pointer; }
+  .dock .bad { background:var(--bad); }
   footer { margin-top:22px; color:var(--muted); font-size:13px; }
 </style>
 </head>
 <body>
 <main>
-  <h1 id="title">Driver</h1>
-  <p class="sub" id="subtitle">Loading your route…</p>
-  <div id="msg"></div>
+  <div class="top">
+    <div><h1 id="title">Driver</h1><p class="sub" id="subtitle">Loading your route…</p></div>
+    <span class="pill" id="net" role="status">Connecting…</span>
+  </div>
+  <div class="progress" id="progress" hidden><i id="bar"></i></div>
+  <div id="msg" aria-live="polite"></div>
   <div id="route"></div>
-  <footer>Keep this page open: it refreshes by itself. Only share this link with the driver of this truck.</footer>
+  <footer>Keep this page open: it refreshes by itself and works through weak signal. Only share this link with the driver of this truck.</footer>
 </main>
+<div class="dock" id="undo" hidden>
+  <div role="status"><span><b id="undoWhat"></b> <span aria-hidden="true" id="undoLeft"></span></span><button id="undoBtn">Undo</button></div>
+</div>
+<div class="dock" id="notice" hidden><div role="status"><span id="noticeText"></span></div></div>
 <script>
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const TOKEN = location.pathname.split("/").filter(Boolean).pop();
+const OUTBOX = `reliefroute-outbox-${TOKEN}`, CACHE = `reliefroute-route-${TOKEN}`;
+const UNDO_MS = 6000;
 const clock = ts => new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-let state = null, busy = false, open = null;
+const saved = { get(k, d) { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
+                set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} } };
+let state = null, open = null, pending = null, undoTimer = null, noticeTimer = null;
+let online = true, lastOk = null, sending = false, mapOpen = true, wake = null;
 
 function show(cls, html) { $("msg").innerHTML = html ? `<div class="card ${cls}">${html}</div>` : ""; }
+function notice(text, bad) {
+  clearTimeout(noticeTimer);
+  $("noticeText").textContent = text;
+  $("notice").firstElementChild.classList.toggle("bad", !!bad);
+  $("notice").hidden = !!pending;  // never cover the undo button
+  noticeTimer = setTimeout(() => { $("notice").hidden = true; }, 3500);
+}
+
+// ---- outbox: updates are saved on the phone first, so weak signal never loses a delivery ------------
+const outbox = () => saved.get(OUTBOX, []);
+const outboxAdd = item => saved.set(OUTBOX, [...outbox().filter(o => o.n !== item.n), item]);
+const outboxDrop = n => saved.set(OUTBOX, outbox().filter(o => o.n !== n));
+
+function setNet() {
+  const n = outbox().length + (pending ? 1 : 0), el = $("net");
+  el.dataset.tone = sending ? "info" : !online ? "bad" : n ? "warn" : "ok";
+  el.textContent = sending ? "Sending…" : !online ? `No signal${n ? ` · ${n} saved` : ""}`
+    : n ? `${n} to send` : `Live${lastOk ? " · " + new Date(lastOk).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""}`;
+}
+
+async function flush() {
+  if (sending || !outbox().length) return;
+  sending = true; setNet();
+  try {
+    for (const item of outbox()) {
+      let r, out;
+      try {
+        r = await fetch(`/api/driver/${TOKEN}/stops/${item.n}`, { method: "POST", keepalive: true,
+          headers: { "Content-Type": "application/json" }, body: JSON.stringify(item.body) });
+        out = await r.json().catch(() => ({}));
+      } catch { online = false; break; }  // no signal: it stays saved and is retried
+      online = true; lastOk = Date.now();
+      outboxDrop(item.n);
+      if (r.ok) {
+        state = { truck: out.truck, depot: out.depot, route: out.route, hazards: out.hazards };
+        saved.set(CACHE, state);
+        if (out.closed) finished(item.body.outcome, out.learned);
+        else notice(item.body.outcome === "delivered" ? `Stop ${item.n} recorded` : `Stop ${item.n} reported to the coordinator`);
+      } else if (!(r.status === 409 && /already recorded/.test(out.detail || ""))) {  // already recorded = it arrived earlier
+        notice(`Stop ${item.n} not recorded: ${out.detail || "server error " + r.status}`, true);
+      }
+    }
+  } finally { sending = false; setNet(); if (!open && !pending) render(); }
+}
+
+function finished(outcome, learned) {
+  show(outcome === "delivered" ? "ok" : "bad", `<h2>Route finished</h2>` +
+    (outcome === "blocked" ? "<p>Blocked road reported: the coordinator sees it and the next route goes around it.</p>" : "") +
+    `<p>Head back to the depot. Anything you did not hand over goes back into stock.</p>` +
+    (learned && learned.eta_samples ? "<p>Your arrival times were used to correct future ETAs.</p>" : ""));
+  window.scrollTo({ top: 0, behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+}
+
+// ---- undo window: nothing leaves the phone for 6 seconds -------------------------------------------
+function commitNow() {
+  if (!pending) return;
+  const p = pending;
+  pending = null; clearTimeout(undoTimer); $("undo").hidden = true;
+  outboxAdd({ n: p.n, body: p.body });
+}
+async function commitPending() {
+  if (!pending) return;
+  const p = pending;
+  if (p.gps) { const pos = await p.gps; if (pos && pending === p) Object.assign(p.body, pos); }
+  if (pending !== p) return;  // undone while waiting for GPS
+  commitNow(); setNet(); render(); flush();
+}
+function tickUndo() {
+  clearTimeout(undoTimer);
+  if (!pending) { $("undo").hidden = true; return; }
+  const left = Math.ceil((pending.until - Date.now()) / 1000);
+  if (left <= 0) { commitPending(); return; }
+  $("undo").hidden = false; $("notice").hidden = true;
+  $("undoLeft").textContent = `· sending in ${left} s`;
+  undoTimer = setTimeout(tickUndo, 250);
+}
+$("undoBtn").onclick = () => {
+  if (!pending) return;
+  const n = pending.n;
+  pending = null; tickUndo(); setNet(); render();
+  notice(`Undone. Stop ${n} is still open.`);
+};
+
+function gps() {
+  return new Promise(ok => {
+    if (!navigator.geolocation) return ok(null);
+    navigator.geolocation.getCurrentPosition(p => ok({ lat: p.coords.latitude, lng: p.coords.longitude }), () => ok(null),
+      { enableHighAccuracy: true, timeout: 8000 });
+  });
+}
+
+async function act(kind, n, short) {
+  const stop = state.route.stops.find(s => s.n === n);
+  const body = { outcome: kind };
+  if (short) {
+    const v = $(`q${n}`).value.trim();
+    if (v === "") { $(`q${n}`).focus(); notice("Enter how many you handed over.", true); return; }
+    body.qty = Math.max(0, Math.min(stop.qty, parseInt(v, 10) || 0));
+  }
+  if (kind !== "delivered") body.note = ($(`w${n}`) || {}).value || "";
+  if (pending) { const p = pending; await commitPending(); if (pending === p) return; }  // an earlier action is sent first
+  const what = kind === "delivered" ? `Delivered ${body.qty ?? stop.qty} ${stop.item} at ${stop.zone}`
+    : kind === "blocked" ? `Road blocked before ${stop.zone}` : `Could not deliver at ${stop.zone}`;
+  pending = { n, body, until: Date.now() + UNDO_MS, gps: kind === "blocked" ? gps() : null };
+  $("undoWhat").textContent = what;
+  open = null; setNet(); render(); tickUndo();
+}
+
+// ---- rendering ------------------------------------------------------------------------------------
+function view() {  // the server's route with this phone's unsent updates applied
+  if (!state || !state.route) return state;
+  const local = new Map(outbox().map(o => [o.n, { ...o, how: "saved" }]));  // a stop in its undo window stays open
+  return { ...state, route: { ...state.route, stops: state.route.stops.map(s => {
+    const l = s.status === "pending" && local.get(s.n);
+    return l ? { ...s, status: l.body.outcome, delivered_qty: l.body.qty ?? s.qty, note: l.body.note || "", local: l.how } : s;
+  }) } };
+}
 
 function mapSvg(route, depot, hazards) {
   const pts = [[depot.lat, depot.lng], ...route.shape, ...route.stops.map(s => [s.lat, s.lng])];
@@ -78,7 +244,7 @@ function mapSvg(route, depot, hazards) {
   const ox = (W - (lo1 - lo0) * kx * sc) / 2, oy = (H - (la1 - la0) * sc) / 2;
   const P = (la, lo) => [ox + (lo - lo0) * kx * sc, oy + (la1 - la) * sc];
   const kmPx = sc / 110.57;
-  let s = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Route map">`;
+  let s = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Route map from ${esc(depot.name)} through ${route.stops.length} stop(s)">`;
   for (const h of hazards) { const [x, y] = P(h.lat, h.lng); s += `<circle cx="${x}" cy="${y}" r="${h.radius_km * kmPx}" fill="#b4231822" stroke="#b42318" stroke-width="3"><title>${esc(h.label)}</title></circle>`; }
   if (route.shape.length > 1) s += `<polyline points="${route.shape.map(p => P(p[0], p[1]).join(",")).join(" ")}" fill="none" stroke="#1f7a4d" stroke-width="7" stroke-linejoin="round" stroke-linecap="round" ${route.source === "estimate" ? 'stroke-dasharray="10 7"' : ""}/>`;
   const [dx, dy] = P(depot.lat, depot.lng);
@@ -91,88 +257,133 @@ function mapSvg(route, depot, hazards) {
   return s + "</svg>";
 }
 
+const ICON = {
+  ok: '<svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="10" fill="#1f7a4d"/><path d="M5.5 10.5l3 3 6-7" stroke="#fff" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  bad: '<svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="10" fill="#b42318"/><path d="M6.5 6.5l7 7M13.5 6.5l-7 7" stroke="#fff" stroke-width="2.4" stroke-linecap="round"/></svg>',
+};
+const LABEL = { delivered: s => `Delivered ${s.delivered_qty} ${esc(s.item)}`, failed: () => "Could not deliver",
+                blocked: () => "Road blocked", skipped: () => "Not reached" };
+
+function doneCard(s) {
+  const ok = s.status === "delivered";
+  const when = s.local === "undo" ? "sending in a moment" : s.local === "saved" ? "saved on this phone, sending" : clock(s.at);
+  return `<div class="stop done ${ok ? "ok" : "bad"}"><h3><span>${ok ? ICON.ok : ICON.bad}Stop ${s.n} · ${esc(s.zone)}</span><small>${when}</small></h3>` +
+    `<div class="state">${LABEL[s.status](s)}${s.note ? " · " + esc(s.note) : ""}</div></div>`;
+}
+
+function actions(s) {
+  const o = open && open.n === s.n ? open.kind : "";
+  const nav = `https://www.google.com/maps/dir/?api=1&destination=${s.lat},${s.lng}&travelmode=driving`;
+  let h = `<div class="acts">
+    <a class="btn plain" href="${nav}" target="_blank" rel="noopener">Navigate to stop ${s.n}</a>
+    <button class="btn primary big" data-act="delivered" data-n="${s.n}">Delivered all ${s.qty} ${esc(s.item)}</button>
+    <button class="btn plain" data-open="short" data-n="${s.n}" aria-expanded="${o === "short"}">Delivered less</button>`;
+  if (o === "short") h += `<div class="detail"><label for="q${s.n}">How many ${esc(s.item)} did you hand over?</label>
+      <input id="q${s.n}" type="number" inputmode="numeric" min="0" max="${s.qty}" placeholder="0 to ${s.qty}">
+      <button class="btn primary" data-act="delivered" data-n="${s.n}" data-short="1">Confirm amount</button></div>`;
+  const problem = ["problem", "blocked", "failed"].includes(o);
+  h += `<div class="sep"></div><button class="btn danger" data-open="problem" data-n="${s.n}" aria-expanded="${problem}">Problem at this stop…</button>`;
+  if (o === "problem") h += `<div class="detail two"><button class="btn danger big" data-open="blocked" data-n="${s.n}">Road blocked</button>` +
+    `<button class="btn danger big" data-open="failed" data-n="${s.n}">Could not deliver</button></div>`;
+  if (o === "blocked" || o === "failed") h += `<div class="detail"><label for="w${s.n}">${o === "blocked"
+      ? "What is blocking the road? Your GPS position is sent with it." : "Why could you not deliver? (camp moved, nobody there…)"}</label>
+      <input id="w${s.n}" maxlength="120" autocomplete="off">
+      <button class="btn dangerfill" data-act="${o}" data-n="${s.n}">Send: ${o === "blocked" ? "road blocked" : "could not deliver"}</button></div>`;
+  return h + `</div>`;
+}
+
 function render() {
-  const { truck, depot, route, hazards } = state;
+  const v = view();
+  if (!v) return;
+  const { truck, depot, route, hazards } = v;
   $("title").textContent = `Truck ${truck.id}`;
   if (!route) {
-    $("subtitle").textContent = `${depot.name} · ${truck.capacity} units · ${truck.status === "out_of_service" ? "out of service" : "waiting at depot"}`;
+    $("progress").hidden = true;
+    $("subtitle").textContent = `${depot.name} · ${truck.capacity} units · ${truck.status === "out_of_service" ? "out of service" : "waiting at the depot"}`;
     $("route").innerHTML = `<div class="card"><h2>No route assigned</h2><p>When the coordinator dispatches a wave that uses this truck, your stops appear here. This page checks every 15 seconds.</p></div>`;
     return;
   }
-  const next = route.stops.find(s => s.status === "pending");
-  $("subtitle").innerHTML = `Route <span class="mono">${esc(route.id)}</span> from ${esc(depot.name)} · left ${clock(route.created_at)}`;
-  let h = `<div class="map">${mapSvg(route, depot, hazards)}</div>`;
-  h += `<div class="facts"><span><b>${route.km}</b> km</span><span>about <b>${route.minutes}</b> min driving</span>` +
-       `<span>${route.source === "road" ? "Road route around reported hazards" : "Estimated route (road router unavailable)"}</span></div>`;
-  for (const s of route.stops) {
-    const pending = s.status === "pending", isNext = next && next.n === s.n;
-    const nav = `https://www.google.com/maps/dir/?api=1&destination=${s.lat},${s.lng}&travelmode=driving`;
-    h += `<div class="stop ${pending ? (isNext ? "next" : "") : s.status}"><h2>Stop ${s.n} · ${esc(s.zone)}<small>${pending ? "ETA " + clock(route.created_at + s.eta_min * 60) : clock(s.at)}</small></h2>` +
-         `<div class="what">Drop <b>${s.qty} ${esc(s.item)}</b></div>`;
-    if (!pending) {
-      const label = { delivered: `Delivered ${s.delivered_qty}`, failed: "Could not deliver", blocked: "Road blocked", skipped: "Not reached" }[s.status];
-      h += `<div class="state ${s.status}">${label}${s.note ? " · " + esc(s.note) : ""}</div></div>`;
-      continue;
-    }
-    const o = open && open.n === s.n ? open.kind : "";
-    h += `<div class="acts">
-      <button class="primary" data-act="delivered" data-n="${s.n}">Delivered all ${s.qty}</button>
-      <button class="plain" data-open="short" data-n="${s.n}">Delivered less</button>
-      <a class="plain" href="${nav}" target="_blank" rel="noopener">Navigate</a>
-      <button class="danger" data-open="failed" data-n="${s.n}">Could not deliver</button>
-      <button class="danger" data-open="blocked" data-n="${s.n}">Road blocked</button>
-      <div class="detail ${o ? "open" : ""}">${o === "short" ? `<label for="q${s.n}">How many did you hand over?</label><input id="q${s.n}" type="number" inputmode="numeric" min="0" max="${s.qty}" value="${Math.round(s.qty / 2)}"><button class="primary" data-act="delivered" data-n="${s.n}" data-short="1">Confirm</button>`
-        : o ? `<label for="w${s.n}">${o === "blocked" ? "What is blocking the road? (your GPS position is sent)" : "Why not? (camp moved, nobody there…)"}</label><input id="w${s.n}" maxlength="120"><button class="primary" data-act="${o}" data-n="${s.n}">Send</button>` : ""}</div>
-    </div></div>`;
-  }
+  const todo = route.stops.filter(s => s.status === "pending"), next = todo[0];
+  const eta = s => clock(route.created_at + s.eta_min * 60);
+  $("subtitle").innerHTML = next
+    ? `Stop ${next.n} of ${route.stops.length} · route <span class="mono">${esc(route.id)}</span> from ${esc(depot.name)}`
+    : `All ${route.stops.length} stop(s) recorded · route <span class="mono">${esc(route.id)}</span>`;
+  $("progress").hidden = false;
+  $("bar").style.width = `${100 * (route.stops.length - todo.length) / route.stops.length}%`;
+  let h = next
+    ? `<section class="stop next" aria-labelledby="s${next.n}"><h2 id="s${next.n}">Stop ${next.n} · ${esc(next.zone)}<small>ETA ${eta(next)}</small></h2>` +
+      `<div class="what">Drop <b>${next.qty} ${esc(next.item)}</b></div>` +
+      (pending && pending.n === next.n ? `<div class="detail" style="margin-top:12px"><b>${esc($("undoWhat").textContent)}</b>` +
+        `<span>Recorded, sending in a moment. Tap Undo below if this was a mistake.</span></div>` : actions(next)) + `</section>`
+    : `<div class="card ok"><h2>All stops recorded</h2><p>Head back to ${esc(depot.name)}. Anything you did not hand over goes back into stock.</p></div>`;
+  h += `<details class="mapbox" ${mapOpen ? "open" : ""}><summary>Route map · ${route.km} km, about ${route.minutes} min</summary>` +
+       `<div class="map">${mapSvg(route, depot, hazards)}</div><p class="fine">${route.source === "road" ? "Road route around reported hazards." : "Estimated route: the road router was unavailable."} ` +
+       `Navigate opens Google Maps, which does not know about the floods reported here: follow this map near red areas.</p></details>`;
+  const later = todo.slice(1);
+  if (later.length) h += `<h3 class="group">Later stops</h3>` + later.map(s =>
+    `<div class="stop"><h3>Stop ${s.n} · ${esc(s.zone)}<small>ETA ${eta(s)}</small></h3><div class="what">Drop <b>${s.qty} ${esc(s.item)}</b></div>` +
+    (open && open.n === s.n ? actions(s) : `<button class="link" data-open="order" data-n="${s.n}">Record this stop out of order</button>`) + `</div>`).join("");
+  const done = route.stops.filter(s => s.status !== "pending");
+  if (done.length) h += `<h3 class="group">Recorded</h3>` + done.map(doneCard).join("");
   $("route").innerHTML = h;
+  keepAwake();
+}
+
+async function keepAwake() {  // a screen that sleeps mid-route makes the driver unlock and reload
+  try {
+    if ("wakeLock" in navigator && !wake && document.visibilityState === "visible") {
+      wake = await navigator.wakeLock.request("screen");
+      wake.addEventListener("release", () => { wake = null; });
+    }
+  } catch {}
 }
 
 async function load() {
-  if (busy) return;
+  if (sending) return;
   try {
     const r = await fetch(`/api/driver/${TOKEN}`);
     const body = await r.json().catch(() => ({}));
+    if (r.status === 404) {
+      $("subtitle").textContent = ""; $("route").innerHTML = "";
+      show("bad", "<h2>This driver link is not active</h2><p>A new operation gives every truck a new link. Ask the coordinator for yours.</p>");
+      online = true; setNet(); return;
+    }
     if (!r.ok) throw new Error(body.detail || `Server error ${r.status}`);
+    online = true; lastOk = Date.now();
     const changed = JSON.stringify(body) !== JSON.stringify(state);
-    state = body;
-    if (changed && !open) render();
-  } catch (e) { if (!state) { $("subtitle").textContent = ""; show("bad", `<h2>Cannot load route</h2><p>${esc(e.message)}</p>`); } }
-}
-
-function gps() {
-  return new Promise(ok => {
-    if (!navigator.geolocation) return ok(null);
-    navigator.geolocation.getCurrentPosition(p => ok({ lat: p.coords.latitude, lng: p.coords.longitude }), () => ok(null),
-      { enableHighAccuracy: true, timeout: 8000 });
-  });
-}
-
-async function act(kind, n, short) {
-  const body = { outcome: kind };
-  if (short) body.qty = Math.max(0, parseInt($(`q${n}`).value, 10) || 0);
-  if (kind !== "delivered") body.note = ($(`w${n}`) || {}).value || "";
-  if (kind === "blocked") Object.assign(body, await gps() || {});
-  busy = true;
-  try {
-    const r = await fetch(`/api/driver/${TOKEN}/stops/${n}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    const out = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(out.detail || `Server error ${r.status}`);
-    open = null; state = { truck: out.truck, depot: out.depot, route: out.route, hazards: out.hazards }; render();
-    if (out.closed) show(kind === "delivered" ? "ok" : "bad", `<h2>Route finished</h2>${kind === "blocked" ? "<p>Blocked road reported: the coordinator sees it and the next route goes around it.</p>" : ""}<p>Head back to the depot. Anything you did not hand over goes back into stock.</p>` +
-      (out.learned && out.learned.eta_samples ? `<p>Your arrival times were used to correct future ETAs.</p>` : ""));
-    else show(kind === "delivered" ? "ok" : "bad", `<h2>${kind === "delivered" ? "Delivery recorded" : kind === "blocked" ? "Blocked road reported" : "Failed delivery recorded"}</h2>` +
-      (kind === "blocked" ? "<p>The coordinator sees it on the map, and later routes go around it.</p>" : ""));
-  } catch (e) { show("bad", `<h2>Not sent</h2><p>${esc(e.message)}. Check your signal and try again.</p>`); }
-  finally { busy = false; }
+    state = body; saved.set(CACHE, body);
+    if (changed && !open && !pending) render();
+  } catch {
+    online = false;
+    if (!state) {
+      const cached = saved.get(CACHE, null);
+      if (cached) { state = cached; render(); }
+      else { $("subtitle").textContent = ""; show("bad", "<h2>No signal yet</h2><p>Your route appears as soon as the phone connects. This page retries every 15 seconds.</p>"); }
+    }
+  }
+  setNet();
+  if (online) flush();
 }
 
 $("route").addEventListener("click", e => {
   const b = e.target.closest("button");
   if (!b) return;
   const n = +b.dataset.n;
-  if (b.dataset.open) { open = open && open.n === n && open.kind === b.dataset.open ? null : { n, kind: b.dataset.open }; render(); return; }
+  if (b.dataset.open) {
+    const k = b.dataset.open;
+    open = open && open.n === n && open.kind === k ? null : { n, kind: k };
+    render();
+    const input = $("route").querySelector(".detail input");
+    if (input) input.focus();
+    return;
+  }
   if (b.dataset.act) act(b.dataset.act, n, b.dataset.short);
+});
+document.addEventListener("toggle", e => { if (e.target.classList && e.target.classList.contains("mapbox")) mapOpen = e.target.open; }, true);
+addEventListener("online", load);
+addEventListener("pagehide", () => { commitNow(); flush(); });
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) { commitNow(); flush(); } else { keepAwake(); load(); }
 });
 
 load();
