@@ -191,6 +191,19 @@ function showMine() {
 }
 showMine();
 
+// a phone photo is often several MB: resize it here so it uploads on weak signal (the server takes up to 4 MB)
+async function shrinkImage(file, max = 1600) {
+  if (!file || file.size < 900000 || !window.createImageBitmap) return file;
+  try {
+    const img = await createImageBitmap(file), k = Math.min(1, max / Math.max(img.width, img.height));
+    const c = document.createElement("canvas");
+    c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+    c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+    const blob = await new Promise(ok => c.toBlob(ok, "image/jpeg", 0.82));
+    return blob ? new File([blob], "photo.jpg", { type: "image/jpeg" }) : file;
+  } catch { return file; }
+}
+
 function show(cls, html) { $("result").innerHTML = `<div class="card ${cls}">${html}</div>`; $("result").scrollIntoView({ behavior: smooth() }); }
 
 $("form").onsubmit = async e => {
@@ -203,7 +216,7 @@ $("form").onsubmit = async e => {
   fd.append("text", $("text").value);
   fd.append("source", "phone");
   if (coords) { fd.append("lat", coords.lat); fd.append("lng", coords.lng); }
-  if ($("photo").files[0]) fd.append("image", $("photo").files[0]);
+  if ($("photo").files[0]) fd.append("image", await shrinkImage($("photo").files[0]));
   if (recBlob) fd.append("audio", recBlob, recBlob.type === "audio/wav" ? "voice.wav" : "voice.webm");
   $("send").disabled = true; $("send").textContent = "Sending… reading your report takes about 15 s";
   const abort = new AbortController(), timer = setTimeout(() => abort.abort(), 45000);

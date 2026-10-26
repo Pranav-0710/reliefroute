@@ -7,8 +7,10 @@
     -> the driver opens the truck's link, follows the road geometry and marks every stop delivered,
        failed or road blocked
     -> outcomes flow back: failed and blocked stops return to the queue, a blocked road becomes a
-       hazard that later routes avoid, undelivered cargo goes back into stock, and the agent learns
-       its real ETA error and field lessons (agent.record_field_route)
+       hazard that every route avoids and trucks already heading into it are rerouted from where
+       they are (reroute_affected), undelivered cargo goes back into stock, and the agent learns
+       its real ETA error, field results per strategy and field lessons (agent.record_field_route)
+    -> autopilot.py decides by itself when the next wave is due (plan_wave now, commit_wave on approval)
 
 Coordinators manage depots, trucks and incoming supplies at runtime.
 State is one JSON document, "ops", in Firestore when configured (shared by every server instance) or
@@ -24,7 +26,7 @@ import time
 import agent
 import roads
 import store
-from env import DEPOTS, ITEMS, TRUCK_CAPACITY, TRUCKS_PER_DEPOT, ReliefEnv, _xy, road_distances
+from env import DEPOTS, ITEMS, TRUCK_CAPACITY, TRUCKS_PER_DEPOT, ReliefEnv, _segment_hits, _xy, road_distances
 
 SCHEMA = 2
 OPS_STOCK = 400  # units of each item per depot when an operation starts
@@ -36,7 +38,12 @@ DUP_GUESS_KM = 1.5  # when a position was guessed from a place name
 DUP_WINDOW_S = 12 * 3600
 KEEP_SHAPES = 20  # closed routes that keep their road geometry
 BLOCKED_RADIUS_KM = 0.5
+CONFIRM_KM = 1.0  # a second report of a hazard this close confirms the first
 OUTCOMES = ("delivered", "failed", "blocked")
+MAX_REROUTES = 5  # trucks rerouted per new hazard; the rest keep their route and see the hazard on the map
+REROUTE_MARGIN_KM = 0.1
+AUTOPILOT = {"mode": "off", "min_urgency": 4, "max_wait_min": 30, "dirty": None, "lease_until": 0,
+             "last_plan_at": 0, "considered": [], "approved": 0}  # see autopilot.py
 
 
 class OpsError(Exception):
@@ -65,7 +72,17 @@ def new_state():
             "depots": [{"id": i, "name": n, "lat": la, "lng": lo, "stock": {it: OPS_STOCK for it in ITEMS}}
                        for i, n, la, lo in DEPOTS],
             "trucks": [_new_truck(f"{i}-T{k + 1}", i) for i, *_ in DEPOTS for k in range(TRUCKS_PER_DEPOT)],
-            "incidents": [], "reports": [], "routes": [], "hazards": [], "waves": [], "restocks": [], "log": []}
+            "incidents": [], "reports": [], "routes": [], "hazards": [], "waves": [], "restocks": [], "log": [],
+            "autopilot": copy.deepcopy(AUTOPILOT), "proposals": []}
+
+
+def _fill(st):
+    """Keys added after schema 2 shipped get their defaults, so a running operation is never wiped."""
+    st.setdefault("proposals", [])
+    ap = st.setdefault("autopilot", {})
+    for k, v in AUTOPILOT.items():
+        ap.setdefault(k, copy.deepcopy(v))
+    return st
 
 
 def _update(mutate):
@@ -76,7 +93,7 @@ def _update(mutate):
             version = st.get("version", 0)
             st.clear()
             st.update(new_state(), version=version)
-        out = mutate(st)
+        out = mutate(_fill(st))
         st["version"] += 1
         return out
     return store.update("ops", _path(), new_state, guarded)
@@ -84,7 +101,7 @@ def _update(mutate):
 
 def load():
     st = store.read("ops", _path(), new_state)
-    return st if st.get("schema") == SCHEMA else _update(lambda s: s)
+    return _fill(st) if st.get("schema") == SCHEMA else _update(lambda s: s)
 
 
 def reset(actor="console"):
@@ -126,37 +143,60 @@ def _find(items, key, value):
     return next((x for x in items if x[key] == value), None)
 
 
+def _eta_at(route, stop):
+    """Expected arrival as a time (stops planned before eta_at existed only have minutes after dispatch)."""
+    return stop.get("eta_at") or route["created_at"] + stop["eta_min"] * 60
+
+
 def _active_hazards(st):
     return [h for h in st["hazards"] if h["active"]]
 
 
-def _add_hazard(st, label, lat, lng, radius_km, source):
+def _routing_hazards(st):
+    """Hazards routes go around: confirmed ones. One unconfirmed report must not wall off a road."""
+    return [h for h in st["hazards"] if h["active"] and h.get("verified", True)]
+
+
+def _add_hazard(st, label, lat, lng, radius_km, source, verified=True):
     h = {"id": f"H{st['next_hazard']}", "label": str(label)[:80], "lat": lat, "lng": lng,
-         "radius_km": radius_km, "source": source, "reported_at": _now(), "active": True}
+         "radius_km": radius_km, "source": source, "reported_at": _now(), "active": True,
+         "verified": verified, "confirmations": 1}
     st["next_hazard"] += 1
     st["hazards"].append(h)
     return h
 
 
+def _dirty(st, why):
+    """Something changed that may make a new wave worth planning (autopilot.py picks it up)."""
+    st["autopilot"]["dirty"] = str(why)[:120]
+
+
 # ---- field reports ----------------------------------------------------------------------------
-def _duplicate_of(st, item, zone, lat, lng, gps, now):
+def _duplicate_of(st, item, zone, lat, lng, gps, now, guessed=False):
     """An open incident for the same item at the same place, reported recently: the same need reported
     twice. Two GPS positions must be within DUP_KM; a position guessed from a place name is only as
-    precise as the locality, so then the same locality (or DUP_GUESS_KM) is enough."""
+    precise as the locality, so then the same locality (or DUP_GUESS_KM) is enough. A request with no
+    known place is never merged: "somewhere in Chennai" is not the same place twice."""
+    if guessed:
+        return None
+
     def same_place(i, km):
         if gps and i["located_by"] == "gps":
             return km <= DUP_KM
         return km <= DUP_GUESS_KM or i["zone"].strip().lower() == str(zone).strip().lower()
     near = [(_km((lat, lng), (i["lat"], i["lng"])), i) for i in st["incidents"]
             if i["item"] == item and not i["closed"] and (i["qty"] > 0 or i["assigned"] > 0)
-            and now - i["reported_at"] <= DUP_WINDOW_S]
+            and i["located_by"] != "guess" and now - i["reported_at"] <= DUP_WINDOW_S]
     near = [x for x in near if same_place(x[1], x[0])]
     return min(near, key=lambda x: x[0])[1] if near else None
 
 
 def add_report(report, source="console", coords=None, actor=None):
     """Turn an intake result into incidents (or merge it into existing ones) and give the reporter a
-    tracking token. A phone's GPS position overrides guessed coordinates."""
+    tracking token. A phone's GPS position overrides guessed coordinates.
+
+    A hazard from a report starts unconfirmed: it is shown, but routes only avoid it once a second
+    report, a driver or a coordinator confirms it. Returns the ids of hazards this report confirmed."""
     gps = coords if coords and _in_chennai(*coords) else None
     now, track = _now(), _token()
 
@@ -164,7 +204,8 @@ def add_report(report, source="console", coords=None, actor=None):
         made, merged = [], []
         for n in report["needs"]:
             lat, lng = gps if gps else (n["lat"], n["lng"])
-            dup = _duplicate_of(st, n["item"], n["zone"], lat, lng, bool(gps), now)
+            located = "gps" if gps else n.get("located", "report")
+            dup = _duplicate_of(st, n["item"], n["zone"], lat, lng, bool(gps), now, guessed=located == "guess")
             if dup:  # the larger figure wins: two people describing one need must not send two trucks
                 extra = max(0, n["qty"] - dup["requested"])
                 dup.update(requested=dup["requested"] + extra, qty=dup["qty"] + extra,
@@ -178,19 +219,34 @@ def add_report(report, source="console", coords=None, actor=None):
                    "requested": n["qty"], "qty": n["qty"], "assigned": 0, "delivered": 0, "urgency": n["urgency"],
                    "status": "waiting", "closed": False, "source": source, "reports": 1,
                    "summary": str(report.get("summary", ""))[:200], "evidence": str(n.get("evidence", ""))[:200],
-                   "note": "", "located_by": "gps" if gps else "report", "reported_at": now, "delivered_at": None}
+                   "note": "location unknown: check before dispatching" if located == "guess" else "",
+                   "located_by": located, "reported_at": now, "delivered_at": None}
             st["next_id"] += 1
             st["incidents"].append(inc)
             made.append(inc)
-        hazards = [_add_hazard(st, h.get("label", "Reported hazard"), h["lat"], h["lng"], 0.8, source)
-                   for h in report.get("hazards", []) if _in_chennai(h["lat"], h["lng"])]
+        hazards, confirmed = [], []
+        for h in report.get("hazards", []):
+            if not _in_chennai(h["lat"], h["lng"]):
+                continue
+            near = next((x for x in _active_hazards(st) if _km((x["lat"], x["lng"]), (h["lat"], h["lng"])) <= CONFIRM_KM), None)
+            if near:  # the same hazard reported again
+                near["confirmations"] = near.get("confirmations", 1) + 1
+                if not near.get("verified", True):
+                    near["verified"] = True
+                    confirmed.append(near["id"])
+                    _log(st, actor or source, f"{near['id']} confirmed by a second report: routes now avoid it")
+                continue
+            hazards.append(_add_hazard(st, h.get("label", "Reported hazard"), h["lat"], h["lng"], 0.8, source,
+                                       verified=False))
         st["reports"] = (st["reports"] + [{"token": track, "at": now, "source": source,
                                            "summary": str(report.get("summary", ""))[:200],
                                            "incidents": [i["id"] for i in made + merged],
-                                           "hazards": len(hazards)}])[-500:]
+                                           "hazards": len(hazards) + len(confirmed)}])[-500:]
         parts = [f"{len(made)} new"] + ([f"{len(merged)} merged into {', '.join(i['id'] for i in merged)}"] if merged else [])
+        parts += [f"{len(hazards)} unconfirmed hazard(s)"] if hazards else []
         _log(st, actor or source, f"Report from {source}: {' · '.join(parts)}")
-        return {"incidents": made, "merged": merged, "track": track, "ops": st}
+        return {"incidents": made, "merged": merged, "track": track, "confirmed": confirmed,
+                "hazards": [h["id"] for h in hazards], "ops": st}
     return _update(add)
 
 
@@ -206,7 +262,7 @@ def track_view(token):
         if not inc:
             continue
         trips = [{"truck": r["truck_id"], "qty": s["qty"], "status": s["status"], "at": s["at"],
-                  "eta_at": r["created_at"] + s["eta_min"] * 60 if s["status"] == "pending" else None}
+                  "eta_at": _eta_at(r, s) if s["status"] == "pending" else None}
                  for r in st["routes"] for s in r["stops"] if s["incident_id"] == iid]
         out.append({k: inc[k] for k in ("id", "zone", "item", "requested", "qty", "assigned", "delivered", "urgency",
                                         "status", "reports", "reported_at", "delivered_at")} | {"trips": trips})
@@ -224,16 +280,18 @@ def _route_for(points, hazards, label, heals):
     return roads.estimate(points)
 
 
-def run_wave(actor="console"):
-    """Plan one wave over every waiting incident with the idle trucks, then send each truck out."""
-    heals, st = [], load()
-    waiting = [i for i in st["incidents"] if i["qty"] > 0 and not i["closed"]]
+def plan_wave(st, heals, skip_unlocated=False):
+    """Plan one wave over the waiting incidents with the idle trucks. Writes nothing: commit_wave sends
+    the trucks out, now (a coordinator's wave) or later (an autopilot proposal someone approves).
+    skip_unlocated leaves out requests with no known place (the autopilot never guesses an address)."""
+    waiting = [i for i in st["incidents"] if i["qty"] > 0 and not i["closed"]
+               and not (skip_unlocated and i["located_by"] == "guess")]
     idle = [t for t in st["trucks"] if t["status"] == "idle"]
     if not waiting:
         raise OpsError("No waiting incidents to dispatch.")
     if not idle:
         raise OpsError("Every truck is out on a route. Wait for a driver to finish, recall a route, or add a truck.")
-    hazards = _active_hazards(st)
+    hazards = _routing_hazards(st)
     depots = [{**d, "trucks": [t["id"] for t in idle if t["depot_id"] == d["id"]],
                "capacity": {t["id"]: t["capacity"] for t in idle if t["depot_id"] == d["id"]}} for d in st["depots"]]
     needs = [{k: i[k] for k in ("id", "zone", "lat", "lng", "item", "qty", "requested", "urgency")} for i in waiting]
@@ -248,7 +306,8 @@ def run_wave(actor="console"):
         heals.append(f"Road router unavailable ({str(e)[:70]}) -> straight-line estimates for planning")
 
     mem = agent.load_memory()
-    strategy, factor = agent.best_strategy(mem), mem["eta_factor"]
+    choice, factor = agent.choose_live_strategy(mem), mem["eta_factor"]
+    strategy = choice["strategy"]
     with road_distances(road):
         env = ReliefEnv()
         obs = env.reset(n_needs=0, chaos=False, random_hazards=False, extra_hazards=hazards, extra_needs=needs,
@@ -273,9 +332,19 @@ def run_wave(actor="console"):
                           "at": None})
         plans.append({"truck_id": tid, "depot_id": depot["id"], "km": r["km"], "minutes": round(r["minutes"] * factor),
                       "source": r["source"], "shape": r["shape"], "stops": stops})
-    now = _now()
+    return {"plans": plans, "info": {k: info[k] for k in ("blocked", "no_truck", "stockout")},
+            "strategy": strategy, "reasoning": why, "strategy_why": choice["why"],
+            "scores": {s: v["expected"] for s, v in choice["scores"].items()}, "eta_factor": factor,
+            "road": road is not None, "needs": [n["id"] for n in needs], "hazards": [h["id"] for h in hazards]}
 
-    def apply(st):  # re-validated on fresh data: reports and drivers may have changed things meanwhile
+
+def commit_wave(planned, actor, heals, hook=None):
+    """Send out the trucks of a planned wave, re-validated on fresh data: reports, drivers and other
+    waves may have changed things since it was planned. hook(st, wave) runs in the same atomic write
+    (raising OpsError there cancels the whole wave)."""
+    plans, strategy, factor, now = planned["plans"], planned["strategy"], planned["eta_factor"], _now()
+
+    def apply(st):
         wave_no = len(st["waves"]) + 1
         trucks = {t["id"]: t for t in st["trucks"]}
         live = {i["id"]: i for i in st["incidents"]}
@@ -298,37 +367,47 @@ def run_wave(actor="console"):
                 inc["assigned"] += q
                 inc["note"] = f"{route_id}: {t['id']} stop {s['n']}, ETA {s['eta_min']} min"
                 _set_status(inc)
-                kept.append({**s, "qty": q})
+                kept.append({**s, "qty": q, "eta_at": now + s["eta_min"] * 60})
             if not kept:
                 continue
             st["next_route"] += 1
             route = {"id": route_id, "wave": wave_no, "truck_id": t["id"], "depot_id": p["depot_id"], "status": "active",
                      "created_at": now, "closed_at": None, "strategy": strategy, "km": p["km"], "minutes": p["minutes"],
-                     "source": p["source"], "shape": p["shape"], "eta_factor": factor, "stops": kept}
+                     "source": p["source"], "shape": p["shape"], "eta_factor": factor, "stops": kept,
+                     "rev": 1, "reroutes": [], "warning": None, "last_pos": None}
             t.update(status="on_route", route_id=route_id)
             st["routes"].append(route)
             made.append(route)
-        for b in info["blocked"]:
+        for b in planned["info"]["blocked"]:
             if b["need_id"] in live:
                 live[b["need_id"]]["note"] = f"wave {wave_no}: no road route around {', '.join(b['hazards'])}; retry next wave"
-        for b in info["no_truck"] + info["stockout"]:
+        for b in planned["info"]["no_truck"] + planned["info"]["stockout"]:
             inc = live.get(b["need_id"])
             if inc and inc["qty"] > 0:
                 inc["note"] = f"wave {wave_no}: no free truck or stock at {b['depot_id']}; retry next wave"
         _prune_shapes(st)
-        wave = {"n": wave_no, "at": now, "strategy": strategy, "reasoning": why, "open_before": len(waiting),
-                "routes": len(made), "stops": sum(len(r["stops"]) for r in made),
+        wave = {"n": wave_no, "at": now, "strategy": strategy, "reasoning": planned["reasoning"],
+                "strategy_why": planned.get("strategy_why", ""), "scores": planned.get("scores", {}),
+                "open_before": len(planned["needs"]), "routes": len(made), "stops": sum(len(r["stops"]) for r in made),
                 "units": sum(s["qty"] for r in made for s in r["stops"]),
                 "left_waiting": sum(1 for i in st["incidents"] if i["qty"] > 0 and not i["closed"]),
-                "road": road is not None, "by": actor or "console"}
+                "road": planned["road"], "by": actor or "console"}
+        if hook:
+            hook(st, wave)
         st["waves"].append(wave)
         _log(st, actor, f"Wave {wave_no}: {wave['routes']} route(s), {wave['units']} units, strategy {strategy}")
         return {"wave": wave, "routes": made, "ops": st}
     out = _update(apply)
     if not out["routes"]:
         heals.append("No truck could take any stop this wave (stock or capacity) -> incidents stay queued")
-    return {**out, "strategy": strategy, "reasoning": why, "heals": heals,
-            "plan": {k: info[k] for k in ("blocked", "no_truck", "stockout")}}
+    return {**out, "strategy": strategy, "reasoning": planned["reasoning"], "strategy_why": planned.get("strategy_why", ""),
+            "heals": heals, "plan": planned["info"]}
+
+
+def run_wave(actor="console"):
+    """Plan one wave over every waiting incident with the idle trucks, then send each truck out."""
+    heals = []
+    return commit_wave(plan_wave(load(), heals), actor, heals)
 
 
 def _prune_shapes(st):
@@ -357,6 +436,8 @@ def _close(st, route, truck, why, actor):
         stock[s["item"]] = stock.get(s["item"], 0) + s["qty"] - s["delivered_qty"]
     route.update(status="done", closed_at=now)
     truck.update(status="idle", route_id=None)
+    if any(i["qty"] > 0 and not i["closed"] for i in st["incidents"]):
+        _dirty(st, f"{truck['id']} is free again")
     _log(st, actor, f"{route['id']} closed ({why}): "
                     f"{sum(s['status'] == 'delivered' for s in route['stops'])}/{len(route['stops'])} stops delivered")
     return {"route": route["id"], "strategy": route["strategy"],
@@ -405,6 +486,10 @@ def driver_update(token, stop_n, outcome, qty=None, note="", coords=None):
             raise OpsError("That stop is already recorded.")
         inc = _find(st["incidents"], "id", stop["incident_id"])
         now = _now()
+        gps = coords if coords and _in_chennai(*coords) else None
+        if gps:  # where the truck is: rerouting starts here
+            route["last_pos"] = [round(gps[0], 5), round(gps[1], 5)]
+        hazard = None
         if outcome == "delivered":
             dq = stop["qty"] if qty is None else max(0, min(stop["qty"], int(qty)))
             stop.update(status="delivered", delivered_qty=dq, at=now, note=note)
@@ -422,12 +507,11 @@ def driver_update(token, stop_n, outcome, qty=None, note="", coords=None):
                 inc["note"] = f"{route['id']}: {'road blocked' if outcome == 'blocked' else 'delivery failed'}" \
                               f"{': ' + note if note else ''}; back in queue"
             if outcome == "blocked":  # the blockage is where the driver is, else on the way to the stop
-                prev = route["stops"][stop["n"] - 2] if stop["n"] > 1 else _find(st["depots"], "id", route["depot_id"])
-                lat, lng = coords if coords and _in_chennai(*coords) else (
-                    (prev["lat"] + stop["lat"]) / 2, (prev["lng"] + stop["lng"]) / 2)
-                h = _add_hazard(st, f"Road blocked: {note or 'reported by driver'} ({t['id']})", lat, lng,
-                                BLOCKED_RADIUS_KM, "driver")
-                _log(st, f"driver {t['id']}", f"Reported {h['id']} near {stop['zone']}")
+                lat, lng = gps or _midpoint(_last_reached(st, route), (stop["lat"], stop["lng"]))
+                hazard = _add_hazard(st, f"Road blocked: {note or 'reported by driver'} ({t['id']})", lat, lng,
+                                     BLOCKED_RADIUS_KM, "driver")
+                _log(st, f"driver {t['id']}", f"Reported {hazard['id']} near {stop['zone']}")
+            _dirty(st, f"{t['id']} stop {stop['n']} {stop['zone']}: {outcome}")
         if inc:
             if inc["qty"] == 0 and inc["assigned"] == 0 and not inc["delivered_at"]:
                 inc["delivered_at"] = now
@@ -436,9 +520,177 @@ def driver_update(token, stop_n, outcome, qty=None, note="", coords=None):
         closed = None
         if all(s["status"] != "pending" for s in route["stops"]):
             closed = _close(st, route, t, "all stops done", f"driver {t['id']}")
-        return {"stop": stop, "closed": closed}
+        return {"stop": stop, "closed": closed, "hazard": hazard["id"] if hazard else None}
     out = _update(upd)
     out["learned"] = _learn(out["closed"]) if out["closed"] else None
+    return out
+
+
+def _last_reached(st, route):
+    """The last place the truck is known to have been: its latest recorded stop, else the depot."""
+    reached = [s for s in route["stops"] if s["status"] in ("delivered", "failed") and s["at"]]
+    if reached:
+        s = max(reached, key=lambda s: (s["at"], s["n"]))
+        return s["lat"], s["lng"]
+    d = _find(st["depots"], "id", route["depot_id"])
+    return d["lat"], d["lng"]
+
+
+def _midpoint(a, b):
+    return (a[0] + b[0]) / 2, (a[1] + b[1]) / 2
+
+
+# ---- rerouting trucks already on the road -----------------------------------------------------------
+def _inside(p, hazards):
+    return any(_km(p, (h["lat"], h["lng"])) <= h["radius_km"] for h in hazards)
+
+
+def _origin(st, route, hazards):
+    """Where the truck drives on from: its last GPS position, else its last stop, else the depot. A point
+    inside an avoided area is passed over: the router cannot start there, and the truck has to turn back
+    out of it anyway."""
+    options = ([tuple(route["last_pos"])] if route.get("last_pos") else []) + [_last_reached(st, route)]
+    return next((p for p in options if not _inside(p, hazards)), options[-1])
+
+
+def _crosses(route, origin, pending, h):
+    """Does the rest of this route pass through hazard h? "stop" when h covers a stop itself: no road can
+    avoid that, so the driver is warned instead."""
+    centre = (h["lat"], h["lng"])
+    if any(_km((s["lat"], s["lng"]), centre) <= h["radius_km"] for s in pending):
+        return "stop"
+    reach = h["radius_km"] + REROUTE_MARGIN_KM
+    shape = route.get("shape") or []
+    if route["source"] == "road" and len(shape) > 1:
+        i = min(range(len(shape)), key=lambda k: _km(origin, shape[k]))  # only the part still ahead
+        return any(_km(p, centre) <= reach for p in shape[i:])
+    pts = [origin] + [(s["lat"], s["lng"]) for s in pending]
+    return any(_segment_hits(a, b, {**h, "radius_km": reach}) for a, b in zip(pts, pts[1:]))
+
+
+def _replan(origin, pending, hazards):
+    """A road route from the truck through its remaining stops around every hazard. Stops no road reaches
+    any more are dropped. {"route", "keep", "drop"}, or {"error"} when the router cannot answer."""
+    def go(stops):
+        return roads.route([origin] + [(s["lat"], s["lng"]) for s in stops], hazards)
+    try:
+        r = go(pending)
+        return {"route": r, "keep": pending, "drop": []} if r else {"error": "road routing is switched off"}
+    except roads.NoRoute:
+        pass
+    except Exception as e:
+        return {"error": str(e)[:70]}
+    keep, drop = [], []
+    try:
+        for s in pending:  # which stops are cut off?
+            try:
+                go([s])
+                keep.append(s)
+            except roads.NoRoute:
+                drop.append(s)
+        return {"route": go(keep) if keep else None, "keep": keep, "drop": drop}
+    except Exception as e:
+        return {"error": str(e)[:70]}
+
+
+def _commit_reroute(route_id, rev, pending_ns, plan, crossing, at_stop, actor):
+    now = _now()
+
+    def upd(st):
+        route = _find(st["routes"], "id", route_id)
+        if not route or route["status"] != "active" or route.get("rev", 1) != rev or \
+                [s["n"] for s in route["stops"] if s["status"] == "pending"] != pending_ns:
+            raise OpsError(f"{route_id} changed while a new route was computed; it keeps its current one")
+        warn = f"{', '.join(at_stop)} reported at one of your stops: approach with care." if at_stop else None
+        if not crossing:
+            route["warning"] = warn
+            _log(st, actor, f"{route_id}: driver warned about {', '.join(at_stop)} at a stop")
+            return {"route": route_id, "changed": False, "warning": warn, "closed": None}
+        if "error" in plan:
+            route["warning"] = f"{', '.join(crossing)} reported on your way and no new route could be computed: " \
+                               f"drive around it."
+            _log(st, actor, f"{route_id}: could not reroute around {', '.join(crossing)} ({plan['error']}); driver warned")
+            return {"route": route_id, "changed": False, "warning": route["warning"], "closed": None,
+                    "heal": f"Reroute of {route_id} failed ({plan['error']}) -> driver warned, route unchanged"}
+        pending = {s["n"]: s for s in route["stops"] if s["status"] == "pending"}
+        km_before = round(sum(s["km"] for s in pending.values()), 1)
+        incs = {i["id"]: i for i in st["incidents"]}
+        dropped = [d["n"] for d in plan["drop"]]
+        for n in dropped:
+            s = pending[n]
+            s.update(status="unreachable", at=now, note=f"no road around {', '.join(crossing)}")
+            inc = incs.get(s["incident_id"])
+            if inc:  # the cargo stays on the truck and goes back into stock when the route closes
+                inc["assigned"] = max(0, inc["assigned"] - s["qty"])
+                inc["qty"] += s["qty"]
+                inc["note"] = f"{route_id}: no road around {', '.join(crossing)}; back in queue"
+                _set_status(inc)
+        r, elapsed = plan["route"], 0.0
+        for k, (d, leg) in enumerate(zip(plan["keep"], r["legs"] if r else [])):
+            elapsed += leg["minutes"] + (SERVICE_MIN if k else 0)
+            s = pending[d["n"]]
+            s.update(km=leg["km"], eta_raw=round((now - route["created_at"]) / 60 + elapsed, 1),
+                     eta_at=now + round(elapsed * route["eta_factor"] * 60))
+            s["eta_min"] = round((s["eta_at"] - route["created_at"]) / 60)
+        km_after = r["km"] if r else 0.0
+        if r:
+            route.update(shape=r["shape"], source=r["source"])
+        route["km"] = round(sum(s["km"] for s in route["stops"] if s["status"] != "unreachable"), 1)
+        left = [s for s in route["stops"] if s["status"] == "pending"]
+        if left:
+            route["minutes"] = round((max(s["eta_at"] for s in left) - route["created_at"]) / 60)
+        route["rev"] = rev + 1
+        route["reroutes"] = (route.get("reroutes", []) + [{"at": now, "hazards": crossing, "km_before": km_before,
+                                                           "km_after": km_after, "dropped": dropped}])[-10:]
+        route["warning"] = warn
+        _log(st, actor, f"Rerouted {route_id} around {', '.join(crossing)}: {km_before} -> {km_after} km left"
+                        + (f"; stop(s) {', '.join(map(str, dropped))} cut off, back in queue" if dropped else ""))
+        if dropped:
+            _dirty(st, f"{route_id}: {len(dropped)} stop(s) cut off by {', '.join(crossing)}")
+        closed = None
+        if not left:
+            closed = _close(st, route, _find(st["trucks"], "id", route["truck_id"]), "no road to the remaining stops", actor)
+        return {"route": route_id, "changed": True, "km_before": km_before, "km_after": km_after,
+                "dropped": dropped, "closed": closed}
+    return _update(upd)
+
+
+def reroute_affected(hazard_ids, actor="agent"):
+    """After a road is confirmed blocked, every truck on the road whose remaining route crosses it gets a
+    new road route around it, starting where it is; stops no road reaches any more go back to the queue.
+    Returns {"rerouted": [per route], "heals": [...], "learned": [outcomes of routes that ended]}."""
+    out = {"rerouted": [], "heals": [], "learned": []}
+    if not hazard_ids:
+        return out
+    st = load()
+    hazards = _routing_hazards(st)
+    new = [h for h in hazards if h["id"] in hazard_ids]
+    for route in [r for r in st["routes"] if r["status"] == "active"]:
+        pending = [s for s in route["stops"] if s["status"] == "pending"]
+        if not pending or not new:
+            continue
+        origin = _origin(st, route, hazards)
+        hits = {h["id"]: _crosses(route, origin, pending, h) for h in new}
+        crossing = [k for k, v in hits.items() if v is True]
+        at_stop = [k for k, v in hits.items() if v == "stop"]
+        if not crossing and not at_stop:
+            continue
+        if crossing and len(out["rerouted"]) >= MAX_REROUTES:
+            out["heals"].append(f"More than {MAX_REROUTES} routes cross {', '.join(crossing)} -> {route['id']} keeps "
+                                f"its route; its driver sees the hazard on the map")
+            continue
+        plan = _replan(origin, pending, hazards) if crossing else {}
+        try:
+            res = _commit_reroute(route["id"], route.get("rev", 1), [s["n"] for s in pending], plan, crossing,
+                                  at_stop, actor)
+        except OpsError as e:
+            out["heals"].append(str(e))
+            continue
+        if res.get("heal"):
+            out["heals"].append(res.pop("heal"))
+        if res["closed"]:
+            out["learned"].append(_learn(res["closed"]))
+        out["rerouted"].append(res)
     return out
 
 
@@ -532,6 +784,18 @@ def restock(depot_id, item, qty, note="", actor="console"):
     return _update(add)
 
 
+def confirm_hazard(hazard_id, actor="console"):
+    """A coordinator confirms a reported hazard: from now on routes avoid it (main reroutes trucks)."""
+    def upd(st):
+        h = _find(st["hazards"], "id", hazard_id)
+        if not h or not h["active"] or h.get("verified", True):
+            raise OpsError(f"{hazard_id} is not an unconfirmed hazard.")
+        h["verified"] = True
+        _log(st, actor, f"Confirmed {hazard_id} ({h['label']}): routes now avoid it")
+        return h
+    return _update(upd)
+
+
 def clear_hazard(hazard_id, actor="console"):
     def upd(st):
         h = _find(st["hazards"], "id", hazard_id)
@@ -561,13 +825,35 @@ def close_incident(incident_id, reason="", actor="console"):
 
 
 # ---- views -------------------------------------------------------------------------------------
+def _coarse(p):
+    return round(p, 3)  # about 100 m: the area on the map, not a family's doorstep
+
+
 def view(st, coordinator):
-    """The operation as a client may see it: driver links only for coordinators, tracking links never."""
+    """The operation as a client may see it. Tracking links never; for the public also no driver links,
+    no reporters' words, positions rounded to ~100 m and coordinators' email addresses hidden."""
     out = copy.deepcopy(st)
     out["reports"] = [{k: r[k] for k in ("at", "source", "incidents")} for r in out["reports"][-50:]]
-    if not coordinator:
-        for t in out["trucks"]:
-            t.pop("token", None)
+    if coordinator:
+        return out
+    for t in out["trucks"]:
+        t.pop("token", None)
+    for i in out["incidents"]:
+        i.update(lat=_coarse(i["lat"]), lng=_coarse(i["lng"]), summary="", evidence="")
+    for r in out["routes"]:
+        r["last_pos"] = None
+        r["shape"] = [[_coarse(a), _coarse(b)] for a, b in r["shape"]]
+        for s in r["stops"]:
+            s.update(lat=_coarse(s["lat"]), lng=_coarse(s["lng"]))
+    for rows in ("log", "waves", "restocks", "proposals"):
+        for x in out.get(rows, []):
+            if "@" in str(x.get("by") or ""):
+                x["by"] = "coordinator"
+    for p in out.get("proposals", []):
+        for plan in p.get("plans", []):
+            plan["shape"] = [[_coarse(a), _coarse(b)] for a, b in plan.get("shape", [])]
+            for s in plan["stops"]:
+                s.update(lat=_coarse(s["lat"]), lng=_coarse(s["lng"]))
     return out
 
 
@@ -577,7 +863,8 @@ def summary(st):
     return {"waiting": len(waiting), "en_route": sum(i["assigned"] > 0 for i in st["incidents"]),
             "delivered": sum(i["status"] == "delivered" for i in st["incidents"]),
             "units_delivered": sum(i["delivered"] for i in st["incidents"]),
-            "hazards": len(_active_hazards(st)), "waves": len(st["waves"]),
+            "hazards": len(_active_hazards(st)), "unconfirmed_hazards": len(_active_hazards(st)) - len(_routing_hazards(st)),
+            "waves": len(st["waves"]),
             "trucks_out": sum(t["status"] == "on_route" for t in st["trucks"]),
             "trucks_free": sum(t["status"] == "idle" for t in st["trucks"]),
             "longest_wait_min": max([(now - i["reported_at"]) // 60 for i in waiting] or [0])}

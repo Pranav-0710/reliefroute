@@ -24,6 +24,10 @@ _cache: OrderedDict = OrderedDict()
 _cache_lock = threading.Lock()
 
 
+class NoRoute(RuntimeError):
+    """The router answered, but no road connects the points without crossing an avoided area."""
+
+
 def enabled():
     return os.getenv("OFFLINE") != "1" and os.getenv("ROUTER_URL", "").lower() != "off"
 
@@ -60,11 +64,14 @@ def _post(path, body):
             return _cache[key]
     r = httpx.post(_url() + path, json=body, timeout=12)
     if r.status_code >= 400:
-        msg = r.text[:120]
+        msg, code = r.text[:120], None
         try:
-            msg = r.json().get("error", msg)
+            body = r.json()
+            msg, code = body.get("error", msg), body.get("error_code")
         except ValueError:
             pass
+        if r.status_code == 400 and (code == 442 or "no path" in str(msg).lower()):
+            raise NoRoute(f"router: {msg}")
         raise RuntimeError(f"router {r.status_code}: {msg}")
     data = r.json()
     with _cache_lock:

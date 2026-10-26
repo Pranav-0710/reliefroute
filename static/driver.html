@@ -78,6 +78,7 @@
 
   .card { background:var(--card); border:2px solid var(--line); border-radius:var(--r); padding:14px; margin-top:12px; }
   .card.ok { border-color:var(--ok); background:var(--ok-bg); } .card.bad { border-color:var(--bad); background:var(--bad-bg); }
+  .card.warn { border-color:var(--warn); background:var(--warn-bg); border-left:6px solid #ff7a1a !important; }
   .card h2 { font-size:17px; margin:0 0 4px; } .card p { margin:4px 0 0; }
 
   /* the undo window and confirmations sit at the bottom, where the driver's thumb is */
@@ -176,7 +177,9 @@ async function flush() {
       online = true; lastOk = Date.now();
       outboxDrop(item.n);
       if (r.ok) {
-        state = { truck: out.truck, depot: out.depot, route: out.route, hazards: out.hazards };
+        const next = { truck: out.truck, depot: out.depot, route: out.route, hazards: out.hazards };
+        noteReroute(next);
+        state = next;
         saved.set(CACHE, state);
         if (out.closed) finished(item.body.outcome, out.learned);
         else notice(item.body.outcome === "delivered" ? `Stop ${item.n} recorded` : `Stop ${item.n} reported to the coordinator`);
@@ -185,6 +188,20 @@ async function flush() {
       }
     }
   } finally { sending = false; setNet(); if (!open && !pending) render(); }
+}
+
+// the server rerouted this truck (a road ahead was cut): say so loudly, once, and redraw
+function noteReroute(next) {
+  const a = state && state.route, b = next && next.route;
+  if (!a || !b || a.id !== b.id || (b.rev || 1) <= (a.rev || 1)) return;
+  const x = (b.reroutes || [])[b.reroutes.length - 1] || { hazards: [], dropped: [], km_before: 0, km_after: 0 };
+  const names = x.hazards.map(id => { const h = (next.hazards || []).find(h => h.id === id); return h ? h.label : id; });
+  const delta = Math.round((x.km_after - x.km_before) * 10) / 10;
+  show("warn", `<h2>Route changed</h2><p>A road ahead is cut: ${esc(names.join("; "))}. Follow the new line on the map` +
+    `${delta ? `: ${delta > 0 ? "+" : ""}${delta} km` : ""}.</p>` +
+    (x.dropped.length ? `<p>Stop ${x.dropped.join(", ")} can no longer be reached: skip it. The coordinator re-plans it and your load for it goes back into stock.</p>` : ""));
+  if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+  open = null; mapOpen = true;
 }
 
 function finished(outcome, learned) {
@@ -245,7 +262,7 @@ async function act(kind, n, short) {
   if (pending) { const p = pending; await commitPending(); if (pending === p) return; }  // an earlier action is sent first
   const what = kind === "delivered" ? `Delivered ${body.qty ?? stop.qty} ${stop.item} at ${stop.zone}`
     : kind === "blocked" ? `Road blocked before ${stop.zone}` : `Could not deliver at ${stop.zone}`;
-  pending = { n, body, until: Date.now() + UNDO_MS, gps: kind === "blocked" ? gps() : null };
+  pending = { n, body, until: Date.now() + UNDO_MS, gps: gps() };  // where the truck is: reroutes start here
   $("undoWhat").textContent = what;
   open = null; setNet(); render(); tickUndo();
 }
@@ -272,7 +289,10 @@ function mapSvg(route, depot, hazards) {
   const P = (la, lo) => [ox + (lo - lo0) * kx * sc, oy + (la1 - la) * sc];
   const kmPx = sc / 110.57;
   let s = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Route map from ${esc(depot.name)} through ${route.stops.length} stop(s)">`;
-  for (const h of hazards) { const [x, y] = P(h.lat, h.lng); s += `<circle cx="${x}" cy="${y}" r="${h.radius_km * kmPx}" fill="#b4231822" stroke="#b42318" stroke-width="3"><title>${esc(h.label)}</title></circle>`; }
+  for (const h of hazards) {  // dashed: reported once, not confirmed; the route does not avoid it yet
+    const [x, y] = P(h.lat, h.lng), un = h.verified === false;
+    s += `<circle cx="${x}" cy="${y}" r="${h.radius_km * kmPx}" fill="${un ? "none" : "#b4231822"}" stroke="#b42318" stroke-width="3" ${un ? 'stroke-dasharray="8 6"' : ""}><title>${esc(h.label)}${un ? " (reported, unconfirmed)" : ""}</title></circle>`;
+  }
   if (route.shape.length > 1) s += `<polyline points="${route.shape.map(p => P(p[0], p[1]).join(",")).join(" ")}" fill="none" stroke="#1f7a4d" stroke-width="7" stroke-linejoin="round" stroke-linecap="round" ${route.source === "estimate" ? 'stroke-dasharray="10 7"' : ""}/>`;
   const [dx, dy] = P(depot.lat, depot.lng);
   const right = dx > W * 0.55;  // keep the depot name inside the map
@@ -290,7 +310,8 @@ const ICON = {
   bad: '<svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="10" fill="#b42318"/><path d="M6.5 6.5l7 7M13.5 6.5l-7 7" stroke="#fff" stroke-width="2.4" stroke-linecap="round"/></svg>',
 };
 const LABEL = { delivered: s => `Delivered ${s.delivered_qty} ${esc(s.item)}`, failed: () => "Could not deliver",
-                blocked: () => "Road blocked", skipped: () => "Not reached" };
+                blocked: () => "Road blocked", skipped: () => "Not reached",
+                unreachable: () => "Cut off by a closed road: back with the coordinator" };
 
 function doneCard(s) {
   const ok = s.status === "delivered";
@@ -332,13 +353,14 @@ function render() {
     return;
   }
   const todo = route.stops.filter(s => s.status === "pending"), next = todo[0];
-  const eta = s => clock(route.created_at + s.eta_min * 60);
+  const eta = s => clock(s.eta_at || route.created_at + s.eta_min * 60);
   $("subtitle").innerHTML = next
     ? `Stop ${next.n} of ${route.stops.length} · route <span class="mono">${esc(route.id)}</span> from ${esc(depot.name)}`
     : `All ${route.stops.length} stop(s) recorded · route <span class="mono">${esc(route.id)}</span>`;
   $("progress").hidden = false;
   $("bar").style.width = `${100 * (route.stops.length - todo.length) / route.stops.length}%`;
-  let h = next
+  let h = route.warning ? `<div class="card bad" role="alert"><p><b>Hazard on your route.</b> ${esc(route.warning)}</p></div>` : "";
+  h += next
     ? `<section class="stop next" aria-labelledby="s${next.n}"><h2 id="s${next.n}">Stop ${next.n} · ${esc(next.zone)}<small>ETA ${eta(next)}</small></h2>` +
       `<div class="what">Drop <b>${next.qty} ${esc(next.item)}</b></div>` +
       (pending && pending.n === next.n ? `<div class="detail" style="margin-top:12px"><b>${esc($("undoWhat").textContent)}</b>` +
@@ -379,8 +401,10 @@ async function load() {
     if (!r.ok) throw new Error(body.detail || `Server error ${r.status}`);
     online = true; lastOk = Date.now();
     const changed = JSON.stringify(body) !== JSON.stringify(state);
+    const rerouted = state && state.route && body.route && (body.route.rev || 1) > (state.route.rev || 1);
+    noteReroute(body);
     state = body; saved.set(CACHE, body);
-    if (changed && !open && !pending) render();
+    if (changed && (rerouted || (!open && !pending))) render();
   } catch {
     online = false;
     if (!state) {

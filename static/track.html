@@ -83,7 +83,7 @@ const clock = ts => new Date(ts * 1000).toLocaleString([], { hour: "2-digit", mi
 function card(i) {
   const coming = i.trips.filter(t => t.status === "pending");
   const eta = coming.length ? Math.min(...coming.map(t => t.eta_at)) : null;
-  const failed = i.trips.filter(t => t.status === "failed" || t.status === "blocked" || t.status === "skipped");
+  const failed = i.trips.filter(t => ["failed", "blocked", "skipped", "unreachable"].includes(t.status));
   const steps = [
     ["Received", true, clock(i.reported_at)],
     ...(failed.length && i.status !== "delivered" ? [["A truck could not get through", "warn", "your request is back in the queue for the next truck"]] : []),

@@ -25,6 +25,8 @@ flowchart TD
     ext["MCP clients"] -.->|JSON-RPC| main
     main --> auth["auth.py<br/>Firebase ID tokens"]
     main --> ops["ops.py<br/>live operations"]
+    main --> auto["autopilot.py<br/>when to dispatch"]
+    auto --> ops
     main --> mcp["mcp_server.py<br/>MCP protocol + tools"]
     main --> agent["agent.py<br/>decision logic"]
     mcp --> agent
@@ -48,7 +50,8 @@ flowchart TD
 | `policy.py` | Features and decision procedure of the learned policy, plus inference in plain Python from `policy_weights.json`. |
 | `rl/train_policy.py` | Trains the policy with REINFORCE in PyTorch. Only needed offline. |
 | `relief_openenv/` | The simulator wrapped as an OpenEnv environment (typed models, server, client, manifest). |
-| `ops.py` | Live operations: incident queue and duplicate merging, dispatch waves, routes, driver updates, resources, tracking, situation reports. |
+| `ops.py` | Live operations: incident queue and duplicate merging, dispatch waves (`plan_wave`, then `commit_wave`), routes, rerouting of trucks on the road, driver updates, resources, tracking, situation reports. |
+| `autopilot.py` | Decides when a wave is worth sending; turns it into a proposal or sends it; approval, rejection, expiry and the planning lease. |
 | `roads.py` | Road distance tables and truck routes from a Valhalla server on OpenStreetMap, with hazards as areas to avoid; straight-line fallback. |
 | `auth.py` | Coordinator sign-in: verifies Firebase ID tokens and checks the coordinator list. |
 | `store.py` | Shared state storage: Cloud Firestore (REST, conditional writes with retry) or local JSON files. |
@@ -399,6 +402,18 @@ When a rate limit is hit, the response is HTTP 429 with `Retry-After`. MCP gets 
 | `test_hazards_are_avoided_by_the_router_and_can_be_cleared` | Against a fake router: hazards sent as excluded areas, road geometry decoded, a hazard cleared; with the router down, the wave falls back to estimates and logs it |
 | `test_coordinator_sign_in_guards_every_change` | With sign-in on: no token, a wrong account and a forged token all get 401 on every protected action; reporters still report; driver links are hidden from the public view; the coordinator's email is recorded |
 | `test_sitrep_stock_alerts_are_never_left_to_gemini` | Stock alerts come from the exact rule even when Gemini writes the report |
+| `test_field_outcomes_choose_the_live_strategy` | One bad field route does not overturn the simulator; three routes per strategy do (84% vs 60% expected); the wave records the strategy, its reason and the scores; `/api/memory` reports the same choice |
+| `test_intake_treats_the_report_as_data_and_caps_what_one_report_adds` | Gemini gets the instructions as a system instruction and the report as data it cannot close early; 10 needs and 5 hazards become 6 and 3, with a heal |
+| `test_requests_without_a_known_place_are_flagged_and_never_merged` | No usable place: `located` is `guess`, the incident says so, and two such requests are not merged |
+| `test_uploads_are_checked_for_type_and_size` | A text file as a photo gets 415; a file over 4 MB gets 413 |
+| `test_blocked_stop_after_a_dropped_stop_number_does_not_crash` | A blocked report on stop 3 of a route without a stop 2 places the hazard halfway from the depot (an IndexError before) |
+| `test_a_confirmed_hazard_reroutes_only_the_trucks_heading_into_it` | One report does not reroute; the second confirms the hazard and reroutes only the route that crosses it (new geometry, later ETA, `rev` 2, the log), not the far one |
+| `test_a_driver_blocked_report_reroutes_other_trucks_over_the_api` | A driver's blocked road on one truck's way reroutes the other truck, over HTTP |
+| `test_a_stop_cut_off_by_a_new_hazard_goes_back_to_the_queue_and_its_cargo_to_stock` | No road reaches the stop: it is `unreachable`, the request is waiting again with its full quantity, the route closes, every unit is back in stock, the strategy is not scored, the autopilot is told |
+| `test_router_down_warns_the_driver_and_keeps_the_route` | The router fails: the route is unchanged, the driver gets a warning, a heal is logged |
+| `test_autopilot_proposes_waits_for_approval_and_learns_from_rejection` | Off does nothing; auto is refused before an approval; propose makes one proposal and waits; approval sends exactly one wave; a rejection's reason becomes a lesson and starts the cool-down; an approval after 10 minutes is refused as expired |
+| `test_autopilot_auto_mode_dispatches_and_skips_unlocated_requests` | Requests with no known place are never dispatched; a held lease blocks planning; auto mode sends a wave as the agent; a non-urgent request is batched until it has waited 30 minutes |
+| `test_autopilot_endpoints_need_a_coordinator_or_the_scheduler_secret` | Every autopilot, proposal and confirm endpoint returns 401 without a coordinator; the scheduler secret runs a tick; the public view hides reporters' words, exact positions and coordinators' emails |
 
 ## 12. Live operations
 
@@ -417,17 +432,19 @@ sequenceDiagram
     API->>AG: intake
     API->>O: add_report: new incident, or merge into an open one
     O-->>F: tracking link /track/...
-    C->>API: POST /api/ops/wave (coordinator)
-    API->>O: run_wave
-    O->>R: distance table between depots and incidents, hazards avoided
-    O->>AG: best_strategy, plan_round (free trucks, real stock, road km)
+    C->>API: POST /api/ops/wave (coordinator), or the autopilot tick
+    API->>O: plan_wave
+    O->>R: distance table between depots and incidents, confirmed hazards avoided
+    O->>AG: choose_live_strategy (field + simulator), plan_round (free trucks, real stock, road km)
     O->>R: one road route per truck
+    O-->>C: a proposal to approve (autopilot), or straight to commit_wave
     O-->>C: routes and ETAs, stock loaded, trucks on route
     D->>API: GET /api/driver/... (route, stops, road geometry)
-    D->>API: POST stop n: delivered / failed / blocked
-    API->>O: driver_update (queue, stock, hazard)
+    D->>API: POST stop n: delivered / failed / blocked (+ GPS)
+    API->>O: driver_update (queue, stock, hazard, truck position)
+    API->>O: reroute_affected (a new hazard): new road routes for trucks heading into it
     O->>AG: record_field_route when the route closes
-    C->>API: GET /api/ops every 5 s: driver events appear in the log
+    C->>API: GET /api/ops every 5 s: driver events, reroutes and proposals appear in the log
 ```
 
 **Operation state** (one document, `reliefroute/ops`):
@@ -437,8 +454,10 @@ sequenceDiagram
 | `depots` | `id`, name, coordinates, `stock` per item. Starts with three depots at 400 units of each item; coordinators open more. |
 | `trucks` | `id`, `depot_id`, `capacity`, `status` (`idle`, `on_route`, `out_of_service`), `route_id`, and `token` (the secret in its driver link) |
 | `incidents` | `id`, zone, coordinates, item, `requested`, `qty` (still to send), `assigned` (on trucks), `delivered`, urgency, `status` (`waiting`, `en_route`, `delivered`, `closed`), `reports` (merged count), source, `located_by`, `note`, times |
-| `routes` | `id`, wave, truck, depot, `status` (`active`, `done`), strategy, `km`, `minutes`, `source` (`road` or `estimate`), `shape` (road geometry, at most 300 points), `eta_factor`, and `stops` (`n`, incident, item, `qty`, `eta_raw`, `eta_min`, `status`, `delivered_qty`, `note`, `at`) |
-| `hazards` | `id`, label, coordinates, `radius_km`, source (`console`, `phone`, `driver`), `active` |
+| `routes` | `id`, wave, truck, depot, `status` (`active`, `done`), strategy, `km`, `minutes`, `source` (`road` or `estimate`), `shape` (road geometry, at most 300 points), `eta_factor`, `rev` (1, plus one per reroute), `reroutes` (time, hazards, km left before and after, stops cut off), `warning` (for the driver), `last_pos` (the truck's last GPS fix), and `stops` (`n`, incident, item, `qty`, `eta_raw`, `eta_min`, `eta_at`, `status` (`pending`, `delivered`, `failed`, `blocked`, `skipped`, `unreachable`), `delivered_qty`, `note`, `at`) |
+| `hazards` | `id`, label, coordinates, `radius_km`, source (`console`, `phone`, `driver`), `active`, `verified` (false for a single report), `confirmations` |
+| `autopilot` | `mode` (`off`, `propose`, `auto`), `min_urgency`, `max_wait_min`, `dirty` (a field change worth planning for), `lease_until`, `last_plan_at`, `considered` (incidents already planned for), `approved` (count) |
+| `proposals` | The last 20: `id`, times, `expires_at`, `trigger`, `status` (`pending`, `approved`, `rejected`, `expired`, `withdrawn`), strategy and its reason, the planned routes (geometry dropped once decided), who decided and why |
 | `reports` | One per field report: tracking `token`, time, source, the incidents it created or merged into |
 | `waves`, `restocks`, `log` | History, incoming supplies, and an activity log of who did what |
 | `version`, `schema` | Change counter; document format (an older format is replaced by a fresh operation on first use) |
@@ -447,15 +466,17 @@ An incident's status follows from its quantities: `waiting` while some of it sti
 
 **A wave**
 1. It takes every waiting incident, the trucks that are `idle` (with their own capacities) and the depots' current stock.
-2. It asks the road router for a distance table between all of those points, with every active hazard as an area to avoid. While planning, `env.road_distances` installs that table, so the simulator, the rule strategies and the learned policy all see road kilometres. A pair the router connected is never treated as crossing a hazard, because its road route already goes around it.
-3. It plans one round with `agent.best_strategy` (the strategy with the best average score, excluding `fifo`) inside a simulator episode that contains only these incidents, depots and trucks.
+2. It asks the road router for a distance table between all of those points, with every confirmed hazard as an area to avoid. While planning, `env.road_distances` installs that table, so the simulator, the rule strategies and the learned policy all see road kilometres. A pair the router connected is never treated as crossing a hazard, because its road route already goes around it.
+3. It plans one round with the strategy from `agent.choose_live_strategy` inside a simulator episode that contains only these incidents, depots and trucks. For every strategy except `fifo`, the expected score is `(n_field × field_mean + 3 × sim_mean) / (n_field + 3)`, where field data counts once a strategy has two closed routes; without field data it is the simulator mean. The highest wins; there is no exploration in live operations. The wave stores the expected scores and a one-line reason.
 4. For each truck with stops, it asks the router for the road route through the stops in order. That gives the geometry the driver sees and the drive time of every leg.
    - The ETA of stop *k* is the drive time up to it, plus 10 minutes of unloading at each earlier stop, multiplied by the learned `eta_factor`.
-5. It applies the result in one atomic update, re-checking everything against fresh data (a report or a driver may have changed things meanwhile):
+5. `commit_wave` applies the result in one atomic update, re-checking everything against fresh data (a report, a driver or another wave may have changed things meanwhile):
    - Stock is taken off the depot.
    - `qty` moves to `assigned`.
    - The truck becomes `on_route`.
    - A truck that became busy in between keeps its stops queued.
+
+Steps 1–4 are `plan_wave`, which writes nothing; step 5 is `commit_wave`. A coordinator's wave runs both at once. The autopilot can run step 5 minutes later, when a coordinator approves its proposal; the re-check in step 5 is what makes that safe.
 
 If the router fails or the wave has more than 40 points, planning and routes use straight-line estimates, and the log says which.
 
@@ -465,7 +486,9 @@ If the router fails or the wave has more than 40 points, planning and routes use
 |---|---|
 | `delivered` (all, or a smaller quantity) | `delivered` grows; any shortfall goes back to `qty`, so it is still dispatched |
 | `failed`, with a reason | The quantity goes back to `qty`; the reason is shown on the incident |
-| `blocked`, with a note and GPS | As failed, plus a new 0.5 km hazard at the driver's position (or halfway along the leg without GPS) |
+| `blocked`, with a note and GPS | As failed, plus a new confirmed 0.5 km hazard at the driver's position (or halfway from the last stop the truck reached, or its depot, without GPS), and rerouting of every truck heading into it |
+
+Every update carries the phone's GPS position when the driver allows it; it becomes the route's `last_pos`.
 
 When the last stop is recorded the route closes:
 - Unused cargo returns to the depot's stock.
@@ -474,8 +497,31 @@ When the last stop is recorded the route closes:
 
 A coordinator can also recall a route; its unvisited stops are `skipped` and return to the queue.
 
+**Rerouting trucks on the road** (`ops.reroute_affected`). It runs when a hazard becomes one that routes avoid: a driver reports a blocked road, a second report confirms a reported hazard, or a coordinator confirms one. For each active route with stops left:
+1. **Where is the truck?** Its `last_pos`, else the last stop it reached, else its depot. A point inside an avoided area is skipped: the router cannot start there, and the truck has to turn back out of it.
+2. **Does the rest of the route cross the new hazard?** For a road route, any point of its geometry from the point nearest the truck onwards within the hazard's radius plus 0.1 km. For an estimated route, any straight leg from the truck through the remaining stops. A hazard that covers a stop itself cannot be routed around; the driver gets a warning instead.
+3. **New route.** The router is asked for a road route from the truck through the remaining stops, around every confirmed hazard. If it answers that no path exists, each stop is tried on its own: stops it cannot reach are marked `unreachable`, their quantity goes back to the incident's `qty`, and their cargo stays on the truck until the route closes. If no stop is left, the route closes.
+4. **Commit.** One atomic update, only if the route is still active, its `rev` unchanged and its pending stops the same. Pending stops get new leg distances, `eta_raw` and `eta_at` (now plus the new drive time, times `eta_factor`); the route gets the new geometry and `rev + 1`, and the change is logged. If the router could not answer, the route is kept and `warning` tells the driver to drive around the hazard.
+
+At most 5 routes are rerouted per hazard. The driver's page compares `rev` on every refresh: when it grows, it vibrates, shows **Route changed** with the extra distance and any stops cut off, and redraws the map. Stops cut off this way are not held against the strategy.
+
+**Autopilot** (`autopilot.py`). `tick()` first reads the operation and decides, without writing, whether a wave is due (`should_plan`):
+- never when the mode is `off`, a proposal is pending, another instance holds the lease, or the last plan was under 2 minutes ago
+- never without a waiting request with a known place, or without a free truck
+- yes when `dirty` is set (a truck came back, a stop failed or was blocked, a stop was cut off), when there is an urgent request (urgency ≥ `min_urgency`, default 4) it has not planned for yet, or when a request has waited `max_wait_min` (default 30) and the last plan is that old. Other requests are batched.
+
+When a wave is due, it claims a 90-second lease with a conditional write (the same mechanism that protects every update, so two instances cannot both claim it), runs `plan_wave` without requests whose place is unknown, then:
+- in `propose` mode stores a proposal that expires after 10 minutes. Approving runs `commit_wave` with the stored plan; the proposal is marked approved inside the same atomic write, so a double click or two coordinators cannot send two waves. Rejecting stores the reason, restarts the cool-down, and adds the reason to the lessons the Gemini planner reads.
+- in `auto` mode commits the wave as `agent (autopilot)`. Auto mode can only be switched on after one approved proposal.
+
+Ticks come from the coordinator console every 15 seconds while it is open, or from any scheduler that calls `POST /api/agent/tick` with `X-Agent-Secret`. Serverless instances do not run background work, so nothing is planned while neither is calling.
+
+**Intake safety.** Gemini receives the intake instructions as a system instruction and the report wrapped in `<report>` tags (any closing tag inside the report is removed), and is told the report is data to extract from. One report adds at most 6 needs and 3 hazards. A hazard from a report starts unconfirmed (`verified: false`): it is shown on maps and to drivers, but routes avoid it only after a second report within 1 km, a driver's report or a coordinator's confirmation. A need whose place could not be read is placed at the city centre with `located_by: guess`; it is not drawn on the map, never merged with another, and never dispatched by the autopilot. Uploads must be image or audio files of at most 4 MB; every Gemini call has a 25-second timeout.
+
+**The public view.** `ops.view` serves non-coordinators the operation without driver links, without reporters' summaries and evidence, with incident, stop and route positions rounded to 3 decimals (about 100 m), without truck positions, and with coordinators' email addresses replaced by "coordinator".
+
 **Learning from the field** (`agent.record_field_route`):
-- **Score:** the urgency-weighted share of the loaded relief that was delivered, averaged per strategy in `memory.field`.
+- **Score:** the urgency-weighted share of the loaded relief that was delivered, averaged per strategy in `memory.field`. Stops `blocked` or `unreachable` because of a road cut after dispatch are left out; a route with nothing else is not scored. This score chooses later waves' strategy (see step 3 of a wave).
 - **ETA correction:** each delivered stop with a plausible arrival time moves `eta_factor` 20% of the way towards actual / router estimate, clamped to 0.5–3. A stop counts when it was recorded at least 30% of the estimate after dispatch, so taps seconds after dispatch do not count. Every later ETA uses the new factor.
 - **Lessons:** failed and blocked stops become lessons ("road to Velachery was blocked …"), which the Gemini planner reads with the others.
 

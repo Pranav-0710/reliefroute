@@ -1,6 +1,7 @@
 """ReliefRoute API: FastAPI server for the multimodal disaster-relief logistics agent."""
 import json
 import os
+import secrets
 import threading
 import time
 from pathlib import Path
@@ -12,6 +13,7 @@ from starlette.concurrency import run_in_threadpool
 
 import agent
 import auth
+import autopilot
 import mcp_server
 import ops
 import roads
@@ -23,7 +25,8 @@ STATIC = Path(__file__).parent / "static"
 # Per client IP, sliding window, per server instance. Protects the shared Gemini quota and memory
 # of a public deployment; not a substitute for authentication.
 LIMITS = {"dispatch": (8, 600), "train": (60, 600), "mcp": (10, 600), "reset": (5, 600),  # (requests, seconds)
-          "report": (12, 600), "wave": (30, 600), "sitrep": (6, 600), "driver": (120, 600), "admin": (60, 600)}
+          "report": (12, 600), "wave": (30, 600), "sitrep": (6, 600), "driver": (120, 600), "admin": (60, 600),
+          "tick": (240, 600)}
 MCP_COSTLY_TOOLS = {"dispatch_relief", "parse_field_report", "train_agent"}
 _hits: dict[tuple[str, str], list[float]] = {}
 _hits_lock = threading.Lock()
@@ -77,11 +80,21 @@ class TrainReq(BaseModel):
     memory: dict | None = None  # browser's copy, restores learning after a serverless cold start
 
 
-async def _media(f: UploadFile | None):
+MAX_UPLOAD = 4 * 1024 * 1024  # per file; phones shrink photos before sending
+
+
+async def _media(f: UploadFile | None, kind: str):
+    """An uploaded photo (kind "image") or voice note ("audio"): checked for type and size before it is
+    read into memory or handed to Gemini."""
     if f is None or not f.filename:
         return None
-    data = await f.read()
-    return (data, f.content_type or "application/octet-stream") if data else None
+    mime = (f.content_type or "").split(";")[0].strip().lower()
+    if not mime.startswith(kind + "/"):
+        raise HTTPException(415, detail=f"The {'photo' if kind == 'image' else 'voice note'} must be an {kind} file.")
+    data = await f.read(MAX_UPLOAD + 1)
+    if len(data) > MAX_UPLOAD:
+        raise HTTPException(413, detail=f"Files can be at most {MAX_UPLOAD // 1024 // 1024} MB.")
+    return (data, mime) if data else None
 
 
 @app.get("/")
@@ -119,7 +132,7 @@ async def dispatch(request: Request, text: str = Form(""), chaos: bool = Form(Tr
     except ValueError:
         pass
     heals: list[str] = []
-    img, aud = await _media(image), await _media(audio)
+    img, aud = await _media(image, "image"), await _media(audio, "audio")
     report = await run_in_threadpool(agent.intake, text, img, aud, heals)
     result = await run_in_threadpool(
         lambda: agent.run_episode(extra_needs=report["needs"], extra_hazards=report["hazards"], chaos=chaos,
@@ -144,7 +157,8 @@ def scenario():
 
 @app.get("/api/memory")
 def memory():
-    return agent.load_memory()
+    mem = agent.load_memory()
+    return {**mem, "live_choice": agent.choose_live_strategy(mem)}  # what the next live wave would use, and why
 
 
 @app.post("/api/memory/reset")
@@ -180,7 +194,7 @@ async def submit_report(request: Request, text: str = Form(""), source: str = Fo
                         image: UploadFile | None = File(None), audio: UploadFile | None = File(None)):
     """A field report from the console or the phone page: intake, then queue (or merge) as incidents."""
     check_rate(request, "report")
-    img, aud = await _media(image), await _media(audio)
+    img, aud = await _media(image, "image"), await _media(audio, "audio")
     if not (text.strip() or img or aud):
         raise HTTPException(400, detail="Send some text, a photo or a voice note.")
     heals: list[str] = []
@@ -190,9 +204,15 @@ async def submit_report(request: Request, text: str = Form(""), source: str = Fo
     except ValueError:
         coords = None
     out = await run_in_threadpool(ops.add_report, report, "phone" if source == "phone" else "console", coords)
+    st, rerouted = out["ops"], []
+    if out["confirmed"]:  # a second report confirmed a hazard: trucks heading into it get new routes
+        rr = await run_in_threadpool(ops.reroute_affected, out["confirmed"])
+        heals += rr["heals"]
+        rerouted, st = rr["rerouted"], ops.load()
     return {"incidents": out["incidents"], "merged": out["merged"], "track": out["track"],
             "track_url": f"/track/{out['track']}", "intake": report, "heals": heals,
-            **_ops_out(out["ops"], request)}
+            "confirmed": out["confirmed"], "unconfirmed": out["hazards"], "rerouted": rerouted,
+            **_ops_out(st, request)}
 
 
 @app.get("/api/ops")
@@ -277,6 +297,15 @@ def clear_hazard(hazard_id: str, request: Request, who: str = Depends(coordinato
     return _admin(request, who, ops.clear_hazard, hazard_id)
 
 
+@app.post("/api/ops/hazards/{hazard_id}/confirm")
+def confirm_hazard(hazard_id: str, request: Request, who: str = Depends(coordinator)):
+    """Routes avoid the hazard from now on, and trucks already heading into it are rerouted."""
+    check_rate(request, "admin")
+    ops.confirm_hazard(hazard_id, actor=who)
+    rr = ops.reroute_affected([hazard_id])
+    return {"rerouted": rr["rerouted"], "heals": rr["heals"], **_ops_out(ops.load(), request)}
+
+
 @app.post("/api/ops/incidents/{incident_id}/close")
 def close_incident(incident_id: str, req: ReasonReq, request: Request, who: str = Depends(coordinator)):
     return _admin(request, who, ops.close_incident, incident_id, req.reason)
@@ -287,6 +316,50 @@ def recall_route(route_id: str, request: Request, who: str = Depends(coordinator
     check_rate(request, "admin")
     out = ops.recall_route(route_id, actor=who)
     return {"learned": out["learned"], **_ops_out(ops.load(), request)}
+
+
+# ---- autopilot: the agent proposes (or sends) waves on its own --------------------------------------
+class AutopilotReq(BaseModel):
+    mode: str | None = None
+    min_urgency: int | None = None
+    max_wait_min: int | None = None
+
+
+def agent_caller(request: Request) -> str:
+    """A coordinator, or an external scheduler that knows AGENT_TICK_SECRET (so the agent keeps working
+    while no console is open)."""
+    secret, given = os.getenv("AGENT_TICK_SECRET", ""), request.headers.get("x-agent-secret", "")
+    if secret and given and secrets.compare_digest(given, secret):
+        return "scheduler"
+    return coordinator(request)
+
+
+@app.put("/api/agent/autopilot")
+def set_autopilot(req: AutopilotReq, request: Request, who: str = Depends(coordinator)):
+    check_rate(request, "admin")
+    autopilot.configure(req.mode, req.min_urgency, req.max_wait_min, actor=who)
+    return _ops_out(ops.load(), request)
+
+
+@app.post("/api/agent/tick")
+def agent_tick(request: Request, who: str = Depends(agent_caller)):
+    check_rate(request, "tick")
+    out = autopilot.tick()
+    return {**out, **(_ops_out(ops.load(), request) if out["acted"] else {})}
+
+
+@app.post("/api/proposals/{proposal_id}/approve")
+def approve_proposal(proposal_id: str, request: Request, who: str = Depends(coordinator)):
+    check_rate(request, "wave")
+    out = autopilot.approve(proposal_id, actor=who)
+    return {**out, **_ops_out(out["ops"], request)}
+
+
+@app.post("/api/proposals/{proposal_id}/reject")
+def reject_proposal(proposal_id: str, req: ReasonReq, request: Request, who: str = Depends(coordinator)):
+    check_rate(request, "admin")
+    autopilot.reject(proposal_id, req.reason, actor=who)
+    return _ops_out(ops.load(), request)
 
 
 # ---- drivers and reporters (no sign-in: the link itself is the secret) ----------------------------
@@ -313,7 +386,9 @@ def driver_stop(token: str, n: int, req: StopReq, request: Request):
         raise HTTPException(404, detail="Unknown driver link.")
     coords = (req.lat, req.lng) if req.lat is not None and req.lng is not None else None
     out = ops.driver_update(token, n, req.outcome, req.qty, req.note, coords)
-    return {"learned": out["learned"], "closed": bool(out["closed"]), **ops.driver_view(token)}
+    rr = ops.reroute_affected([out["hazard"]] if out["hazard"] else [])  # a blocked road reroutes every truck behind it
+    return {"learned": out["learned"], "closed": bool(out["closed"]), "rerouted": rr["rerouted"],
+            **ops.driver_view(token)}
 
 
 @app.get("/api/track/{token}")

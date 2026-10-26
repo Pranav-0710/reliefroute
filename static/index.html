@@ -143,6 +143,26 @@
   #waveWhy { font:12px var(--mono); color:var(--muted); margin-bottom:8px; }
   #waveWhy.go { color:var(--text); }
   .dispatch .row .btn { flex:1; }
+  .auto { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:6px; }
+  .auto > span { font:600 11.5px var(--mono); letter-spacing:.1em; color:var(--muted); }
+  .seg { display:flex; border:1px solid var(--line-2); }
+  .seg button { background:none; border:0; border-left:1px solid var(--line-2); color:var(--muted); font:500 12px var(--sans); padding:0 11px; min-height:28px; cursor:pointer; }
+  .seg button:first-child { border-left:0; }
+  .seg button:hover { color:var(--text); }
+  .seg button[aria-pressed="true"] { background:var(--text); color:var(--bg); }
+  .seg button[data-ap="auto"][aria-pressed="true"] { background:var(--signal); color:var(--signal-ink); }
+  .seg button[aria-disabled="true"] { opacity:.5; cursor:not-allowed; }
+  #apWhy { font-size:12px; color:var(--muted); margin:0 0 10px; }
+  .prop { border:1px solid var(--signal); background:var(--signal-bg); padding:10px 12px 12px; margin-bottom:10px; }
+  .prop-h { display:flex; justify-content:space-between; gap:8px; align-items:baseline; }
+  .prop-h .num { font-size:12px; color:var(--muted); }
+  .prop b { display:block; font-size:14px; margin:6px 0 2px; }
+  .prop .sub { font-size:12px; color:#e2d6cc; }
+  .prop ul { margin:8px 0; padding:0; list-style:none; font:12px/1.5 var(--mono); }
+  .prop .row .btn { flex:1; }
+  .hz-un { color:var(--signal); }
+  table.choice td, table.choice th { text-transform:none; }
+  table.choice tr.chosen td { color:var(--road); }
 
   /* ---- stage: map + agent log ---------------------------------------------------------- */
   #stage { display:grid; grid-template-rows:minmax(0,1fr) auto; grid-template-columns:minmax(0,1fr); min-height:0; background:#06080a; }
@@ -265,6 +285,7 @@
     input, select, textarea { font-size:16px !important; }
     .btn.sm { min-height:44px; min-width:44px; }
     .sample { min-height:44px; }
+    .seg button { min-height:44px; padding:0 14px; }
     .modes { height:44px; } .mode { min-height:44px; }
     details.more summary { min-height:44px; }
     .ev { grid-template-columns:54px 74px minmax(0,1fr); padding:4px 12px; }
@@ -345,6 +366,16 @@
     </div>
 
     <div class="dispatch" data-show="ops">
+      <div class="auto">
+        <span id="apLabel">AUTOPILOT</span>
+        <div class="seg" role="group" aria-labelledby="apLabel">
+          <button type="button" data-ap="off" data-coord aria-pressed="true">Off</button>
+          <button type="button" data-ap="propose" data-coord aria-pressed="false">Propose</button>
+          <button type="button" data-ap="auto" data-coord aria-pressed="false">Auto</button>
+        </div>
+      </div>
+      <p id="apWhy" aria-live="polite"></p>
+      <div id="proposal" aria-live="polite" hidden></div>
       <div id="waveWhy" aria-live="polite"></div>
       <button class="btn signal block" id="wave" data-coord>Dispatch wave</button>
       <div class="row">
@@ -364,6 +395,8 @@
         <span><svg width="20" height="12"><line x1="0" y1="6" x2="20" y2="6" stroke="#3ddc97" stroke-width="3"/></svg>Truck route</span>
         <span><svg width="12" height="12"><rect x="1" y="1" width="10" height="10" fill="#e9e7e3"/></svg>Depot</span>
         <span><svg width="14" height="14"><defs><pattern id="lh" width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="4" stroke="#ff5a52" stroke-width="1.5"/></pattern></defs><circle cx="7" cy="7" r="6" fill="url(#lh)" stroke="#ff5a52"/></svg>Flooded or blocked</span>
+        <span data-show="ops"><svg width="14" height="14"><circle cx="7" cy="7" r="6" fill="none" stroke="#ff5a52" stroke-dasharray="2 2"/></svg>Reported, unconfirmed</span>
+        <span data-show="ops"><svg width="20" height="12"><line x1="0" y1="6" x2="20" y2="6" stroke="#ff7a1a" stroke-width="2" stroke-dasharray="4 3"/></svg>Agent proposal</span>
       </div>
       <svg id="map" role="img" aria-label="Map of Chennai with depots, requests, truck routes and flooded roads"></svg>
     </div>
@@ -418,8 +451,10 @@
     <div class="sec off" data-show="ops" data-pane="learning" role="tabpanel">
       <div class="sec-h"><h2>Learning from the field</h2></div>
       <div class="figs" id="fieldFigs"></div>
-      <div class="rowlist" id="fieldStrat"></div>
-      <p class="hint" style="margin-top:8px">Every closed route is scored on what drivers actually delivered. Arrival times correct future ETAs; failed and blocked stops become lessons.</p>
+      <div class="sec-h" style="margin-top:14px"><h2>Strategy for the next wave</h2></div>
+      <p class="hint" id="choiceWhy" style="margin-bottom:8px"></p>
+      <table class="stock choice" id="choice"></table>
+      <p class="hint" style="margin-top:8px">Expected = what drivers delivered on that strategy's routes, weighed against its simulator score until real routes outnumber it. Roads cut after dispatch do not count against a strategy. Arrival times correct future ETAs; failed and blocked stops become lessons.</p>
     </div>
     <div class="sec off" data-show="ops" data-pane="activity" role="tabpanel">
       <div class="sec-h"><h2>Activity</h2><span class="count">who did what</span></div>
@@ -452,9 +487,9 @@
   <div class="dhead"><h2 id="howTitle">How ReliefRoute works</h2></div>
   <ol>
     <li><span><b>Report.</b> Field workers send text, a photo or a voice note in any language from <span class="num">/report</span>. Gemini turns it into requests: place, item, quantity, urgency. The same need reported twice becomes one request.</span></li>
-    <li><span><b>Plan.</b> A coordinator dispatches a wave. The agent assigns every waiting request to free trucks with its best learned strategy (a neural policy trained with reinforcement learning), on real road distances that avoid reported floods.</span></li>
-    <li><span><b>Drive.</b> Each driver opens their truck's link on a phone, follows the road route and marks each stop delivered, failed or road blocked.</span></li>
-    <li><span><b>Learn.</b> A blocked road becomes a hazard the next routes avoid, unserved relief returns to the queue, and every finished route teaches the agent: field scores, an ETA correction and lessons for the planner.</span></li>
+    <li><span><b>Plan.</b> The agent assigns waiting requests to free trucks on real road distances that avoid confirmed floods, with the strategy that has delivered best in the field so far. A coordinator dispatches, or turns on the autopilot: the agent then proposes a wave by itself when an urgent request arrives or something changes, and the coordinator approves or rejects it.</span></li>
+    <li><span><b>Drive.</b> Each driver opens their truck's link on a phone, follows the road route and marks each stop delivered, failed or road blocked. When a road is cut, every truck heading into it is rerouted from where it is, and its driver sees the new route.</span></li>
+    <li><span><b>Learn.</b> Unserved relief returns to the queue, a hazard reported twice is confirmed, and every finished route teaches the agent: field scores that pick the next strategy, an ETA correction, and lessons, including the reasons a coordinator gives for rejecting a plan.</span></li>
   </ol>
   <p class="hint" style="padding:0 18px 14px">No coordinator account? Open the Simulator and run 5 episodes to watch the agent plan, hit a collapsed bridge, recover and learn. Other agents can use ReliefRoute's tools over MCP at <span class="num">/mcp</span>.</p>
   <div class="dfoot"><button class="btn" id="howClose">Close</button></div>
@@ -560,10 +595,11 @@ function tag(x, y, text, color) {  // a small square callout on the map
   return `<g><rect x="${tx}" y="${ty}" width="${w}" height="20" fill="#0a0c0f" stroke="${color}" stroke-width="1"/>` +
     `<text x="${tx + 7}" y="${ty + 14}" fill="${C.text}" font-size="11" font-family="IBM Plex Mono, monospace">${esc(text)}</text></g>`;
 }
-function hazardShape(h) {
-  const [x, y] = px(h.lat, h.lng);
-  return `<circle cx="${x}" cy="${y}" r="${Math.max(7, h.radius_km * PX_PER_KM)}" fill="url(#hatch)" stroke="${C.hazard}" stroke-width="1.5"><title>${esc(h.label)}</title></circle>` +
-    label(x + Math.max(7, h.radius_km * PX_PER_KM) + 4, y + 4, esc(h.label.length > 36 ? h.label.slice(0, 35) + "…" : h.label), C.hazard, 11, 'font-weight="500"');
+function hazardShape(h) {  // a single unconfirmed report is drawn as an outline: routes do not avoid it yet
+  const [x, y] = px(h.lat, h.lng), r = Math.max(7, h.radius_km * PX_PER_KM), un = h.verified === false;
+  const name = (h.label.length > 36 ? h.label.slice(0, 35) + "…" : h.label) + (un ? " · unconfirmed" : "");
+  return `<circle cx="${x}" cy="${y}" r="${r}" fill="${un ? "none" : "url(#hatch)"}" stroke="${C.hazard}" stroke-width="1.5" ${un ? 'stroke-dasharray="3 3"' : ""}><title>${esc(h.label)}${un ? " (one report, not yet avoided)" : ""}</title></circle>` +
+    label(x + r + 4, y + 4, esc(name), un ? C.muted : C.hazard, 11, 'font-weight="500"');
 }
 function depotShape(d, stock) {
   const [x, y] = px(d.lat, d.lng);
@@ -728,9 +764,7 @@ $("go").onclick = async () => {
   fd.append("text", $("text").value);
   fd.append("chaos", $("chaos").checked);
   if (localMem) fd.append("memory", JSON.stringify(localMem));
-  if ($("image").files[0]) fd.append("image", $("image").files[0]);
-  if ($("audio").files[0]) fd.append("audio", $("audio").files[0]);
-  else if (recBlob) fd.append("audio", recBlob, recBlob.type === "audio/wav" ? "voice.wav" : "voice.webm");
+  await attachMedia(fd);
   $("go").disabled = true; $("go").textContent = "Working…"; pipeBusy();
   try {
     const res = await api("/api/dispatch", { method: "POST", body: fd });
@@ -874,6 +908,8 @@ const ITEMS = ["water", "food", "medicine", "blankets"];
 let ops = null, opsSummary = null, opsBusy = false, opsSeen = null, stopSeen = null, routeSeen = null, picking = false, picked = null;
 const mins = ts => Math.max(0, Math.round((Date.now() / 1000 - ts) / 60));
 const hhmm = ts => new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+const etaOf = (r, s) => s.eta_at || r.created_at + s.eta_min * 60;  // reroutes move eta_at
+const AGENT = "agent (autopilot)";
 
 function setMode(m) {
   document.body.dataset.mode = m;
@@ -890,7 +926,8 @@ function incLine(i) {
   const state = i.status === "waiting" ? `<span class="ist wait ${w >= 60 ? "bad" : w >= 30 ? "late" : ""}">waiting ${w} min</span>`
     : i.status === "en_route" ? `<span class="ist road">on the road</span>` : i.status === "delivered" ? `<span class="ist done">delivered</span>` : `<span class="ist">closed</span>`;
   const detail = i.status === "waiting" && i.assigned ? `${i.assigned} already on a truck` : i.status === "delivered" ? `${i.delivered} delivered` : "";
-  const extra = [detail, i.source === "phone" ? `phone${i.located_by === "gps" ? ", GPS" : ""}` : "", i.note].filter(Boolean).map(esc).join(" · ");
+  const extra = [detail, i.source === "phone" ? `phone${i.located_by === "gps" ? ", GPS" : ""}` : "", i.note].filter(Boolean).map(esc).join(" · ") +
+    (i.located_by === "guess" && i.status === "waiting" ? ` <span class="hz-un">· not on the map, autopilot skips it</span>` : "");
   const canClose = me.coordinator && i.status === "waiting" && !i.assigned;
   return `<div class="inc" data-status="${i.status}" style="--u:${i.urgency}"><div class="urgbar" aria-hidden="true"></div><div>` +
     `<div class="inc-l1"><b>${esc(i.zone)}</b>${state}</div>` +
@@ -916,6 +953,7 @@ function renderOps(st, s) {
     : !s.trucks_free ? "No free truck. Recall a route or add a truck."
     : `${s.waiting} request${s.waiting === 1 ? "" : "s"} waiting · ${s.trucks_free} of ${s.trucks_free + s.trucks_out} trucks free`;
   $("waveWhy").className = s.waiting && s.trucks_free ? "go" : "";
+  renderAutopilot(st);
   const rank = { waiting: 0, en_route: 1, delivered: 2, closed: 3 };
   const list = [...st.incidents].sort((a, b) => rank[a.status] - rank[b.status] ||
     (rank[a.status] ? b.reported_at - a.reported_at : b.urgency - a.urgency || a.reported_at - b.reported_at));
@@ -939,7 +977,7 @@ function renderOps(st, s) {
 
 function renderFleet(st) {
   const routes = Object.fromEntries(st.routes.map(r => [r.id, r]));
-  const nextEta = t => { const r = t.route_id && routes[t.route_id], n = r && r.stops.find(x => x.status === "pending"); return n ? r.created_at + n.eta_min * 60 : 0; };
+  const nextEta = t => { const r = t.route_id && routes[t.route_id], n = r && r.stops.find(x => x.status === "pending"); return n ? etaOf(r, n) : 0; };
   const order = t => { const r = t.route_id && routes[t.route_id];
     return r && r.stops.some(x => x.status === "failed" || x.status === "blocked") ? 0 : r ? 1 : t.status === "idle" ? 2 : 3; };
   const trucks = [...st.trucks].sort((a, b) => order(a) - order(b) || nextEta(a) - nextEta(b));
@@ -948,7 +986,8 @@ function renderFleet(st) {
     const r = t.route_id && routes[t.route_id];
     const done = r ? r.stops.filter(x => x.status !== "pending").length : 0;
     const next = r && r.stops.find(x => x.status === "pending");
-    const info = r ? `${esc(r.id)} · ${done} of ${r.stops.length} stops${next ? ` · next ${esc(next.zone)} ${hhmm(r.created_at + next.eta_min * 60)}` : ""}`
+    const info = r ? `${esc(r.id)} · ${done} of ${r.stops.length} stops${next ? ` · next ${esc(next.zone)} ${hhmm(etaOf(r, next))}` : ""}` +
+        (r.rev > 1 ? ` · <span class="hz-un">rerouted</span>` : "") + (r.warning ? ` · <span style="color:var(--hazard)">${esc(r.warning)}</span>` : "")
       : `${t.capacity} units · ${esc(t.depot_id)}`;
     const link = t.token ? `${location.origin}/driver/${t.token}` : "";
     const acts = [];
@@ -970,11 +1009,69 @@ function renderStock(st) {
 }
 
 function renderHazards(st) {
-  const active = st.hazards.filter(h => h.active);
-  $("hazards").innerHTML = active.map(h => `<div><div>${esc(h.label)}<div class="sub">${esc(h.id)} · reported by ${esc(h.source)} · ${hhmm(h.reported_at)}</div></div>` +
-    (me.coordinator ? `<div class="acts"><button class="btn sm" data-clear="${esc(h.id)}">Reopened</button></div>` : "") + `</div>`).join("")
-    || '<div class="hint">No active hazards.</div>';
+  const active = st.hazards.filter(h => h.active).sort((a, b) => (a.verified === false ? 0 : 1) - (b.verified === false ? 0 : 1));
+  $("hazards").innerHTML = active.map(h => {
+    const un = h.verified === false;
+    const acts = me.coordinator ? (un ? `<button class="btn sm" data-confirm="${esc(h.id)}">Confirm</button>` : "") +
+      `<button class="btn sm" data-clear="${esc(h.id)}">${un ? "Dismiss" : "Reopened"}</button>` : "";
+    return `<div><div>${esc(h.label)}<div class="sub">${esc(h.id)} · ${un ? '<span class="hz-un">one report, routes do not avoid it yet</span>'
+      : `avoided by every route${h.confirmations > 1 ? ` · ${h.confirmations} reports` : ""}`} · ${esc(h.source)} · ${hhmm(h.reported_at)}</div></div>` +
+      (acts ? `<div class="acts">${acts}</div>` : "") + `</div>`;
+  }).join("") || '<div class="hint">No active hazards.</div>';
 }
+
+// ---- autopilot: the agent proposes waves; a coordinator approves, or lets it dispatch -------------------
+const AP_TEXT = {
+  off: "Off. Waves go out when a coordinator dispatches.",
+  propose: "The agent plans a wave by itself when an urgent request arrives, a request waits {wait} min, or a truck comes back or a stop fails. A coordinator approves each one.",
+  auto: "The agent dispatches on its own under the same rules. Every wave is in the log, marked as the agent's.",
+};
+let apNote = "";
+function renderAutopilot(st) {
+  const ap = st.autopilot || { mode: "off", approved: 0, max_wait_min: 30 };
+  document.querySelectorAll("[data-ap]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.ap === ap.mode)));
+  $("apWhy").textContent = AP_TEXT[ap.mode].replace("{wait}", ap.max_wait_min) + (apNote && ap.mode !== "off" ? ` Now: ${apNote}.` : "");
+  const now = Date.now() / 1000, p = (st.proposals || []).find(x => x.status === "pending" && x.expires_at > now);
+  $("proposal").hidden = !p;
+  $("wave").classList.toggle("signal", !p);  // one orange action at a time: Approve while a proposal waits
+  if (!p) { $("proposal").innerHTML = ""; return; }
+  const lines = p.plans.map(pl => `<li>${esc(pl.truck_id)}: ${pl.stops.map(s => `${esc(s.zone)} ${s.qty} ${esc(s.item)}`).join(" → ")} · ${pl.km} km</li>`).join("");
+  $("proposal").innerHTML = `<div class="prop"><div class="prop-h"><span class="tag heal">AGENT PROPOSES ${esc(p.id)}</span>` +
+    `<span class="num">expires ${hhmm(p.expires_at)}</span></div>` +
+    `<b>${p.routes} route${p.routes === 1 ? "" : "s"} · ${p.units} units</b><div class="sub">Why now: ${esc(p.trigger)}</div>` +
+    `<div class="sub">${esc(p.strategy_why || p.strategy)}</div><ul>${lines}</ul>` +
+    `<div class="row"><button class="btn signal" data-approve="${esc(p.id)}" data-coord>Approve and dispatch</button>` +
+    `<button class="btn" data-reject="${esc(p.id)}" data-coord>Reject…</button></div></div>`;
+  if (!me.coordinator) $("proposal").querySelectorAll("[data-coord]").forEach(c => c.setAttribute("aria-disabled", "true"));
+}
+
+let ticking = false;
+async function tickAgent() {
+  if (ticking || !me.coordinator || !ops || !ops.autopilot || ops.autopilot.mode === "off" || opsBusy) return;
+  ticking = true;
+  try {
+    const r = await api("/api/agent/tick", { method: "POST" });
+    apNote = r.acted ? "" : r.why;
+    if (r.acted) {
+      noteChanges(r.ops); renderOps(r.ops, r.summary);
+      if (r.proposal) toast(`The agent proposes ${r.proposal.routes} route(s) for ${r.proposal.units} units. Review it under Dispatch.`, { tone: "ok" });
+    } else renderAutopilot(ops);
+    for (const h of r.heals || []) { const [tag, cls] = healTag(h); ev(tag, cls, esc(h)); }
+  } catch (e) { apNote = e.message; }
+  finally { ticking = false; }
+}
+setInterval(() => { if (document.body.dataset.mode === "ops" && !document.hidden) tickAgent(); }, 15000);
+
+document.querySelector(".seg").addEventListener("click", async e => {
+  const b = e.target.closest("[data-ap]");
+  if (!b || document.body.classList.contains("readonly")) return;
+  try {
+    const r = await postJSON("/api/agent/autopilot", { mode: b.dataset.ap }, "PUT");
+    apNote = ""; renderOps(r.ops, r.summary);
+    ev("AUTOPILOT", "good", esc(AP_TEXT[b.dataset.ap].replace("{wait}", r.ops.autopilot.max_wait_min)));
+    tickAgent();
+  } catch (err) { toast(err.message, { tone: "bad" }); }
+});
 
 function renderActivity(st) {
   $("activity").innerHTML = [...st.log].reverse().slice(0, 40)
@@ -983,13 +1080,21 @@ function renderActivity(st) {
 
 function renderField(mem) {
   const f = mem.field || { strategies: {}, routes: [] };
-  const n = f.routes.length, avg = n ? mean(f.routes.map(r => r.score)) : null;
+  const scored = f.routes.filter(r => r.score !== null && r.score !== undefined);
+  const n = f.routes.length, avg = scored.length ? mean(scored.map(r => r.score)) : null;
   $("fieldFigs").innerHTML = `<div><b>${n}</b><span>routes closed</span></div>` +
     `<div><b>${avg === null ? "–" : avg.toFixed(0) + "%"}</b><span>loaded relief delivered</span></div>` +
     `<div><b>×${(mem.eta_factor ?? 1).toFixed(2)}</b><span>learned ETA correction</span></div>` +
-    `<div><b>${mem.lessons.filter(l => l.startsWith("Field:")).length}</b><span>field lessons</span></div>`;
-  $("fieldStrat").innerHTML = Object.entries(f.strategies).map(([k, v]) =>
-    `<div><span class="num">${esc(k)}</span><span class="sub">${v.n} route${v.n === 1 ? "" : "s"} · ${v.mean.toFixed(0)}% delivered</span></div>`).join("");
+    `<div><b>${mem.lessons.filter(l => l.startsWith("Field:") || l.startsWith("Coordinator")).length}</b><span>field lessons</span></div>`;
+  const c = mem.live_choice;
+  if (!c) return;
+  const pct = (v, n) => v === null || v === undefined ? "–" : `${v.toFixed(0)}%<span class="sr-only"> over ${n}</span>`;
+  $("choiceWhy").textContent = c.why;
+  $("choice").innerHTML = `<tr><th>Strategy</th><th>Simulator</th><th>Field</th><th>Expected</th></tr>` +
+    Object.entries(c.scores).sort((a, b) => (b[1].expected ?? -1) - (a[1].expected ?? -1)).map(([k, v]) =>
+      `<tr class="${k === c.strategy ? "chosen" : ""}"><td class="num">${esc(k)}${k === c.strategy ? " ◂" : ""}</td>` +
+      `<td>${pct(v.sim, v.n_sim + " episodes")}<span class="hint"> ${v.n_sim}</span></td>` +
+      `<td>${pct(v.field, v.n_field + " routes")}<span class="hint"> ${v.n_field}</span></td><td>${pct(v.expected, "")}</td></tr>`).join("");
 }
 
 function refreshMemory() {
@@ -1005,13 +1110,16 @@ function drawOpsMap() {
   const at = o => px(o.lat, o.lng);
   let s = baseMap();
   for (const h of ops.hazards.filter(h => h.active)) s += hazardShape(h);
-  const tags = [];
+  const tags = [], now = Date.now() / 1000;
+  for (const p of (ops.proposals || []).filter(p => p.status === "pending" && p.expires_at > now))
+    for (const pl of p.plans) if (pl.shape.length > 1)  // what the agent wants to send, before anyone approves
+      s += `<polyline points="${pts(pl.shape)}" fill="none" stroke="${C.signal}" stroke-width="2" stroke-dasharray="5 4" stroke-linejoin="round"><title>${esc(p.id)} proposal: ${esc(pl.truck_id)}, ${pl.km} km</title></polyline>`;
   for (const r of ops.routes.filter(r => r.status === "active")) {
     if (r.shape.length > 1) {
-      s += routeLine(pts(r.shape), r.source === "estimate", `${esc(r.id)} ${esc(r.truck_id)}: ${r.km} km, ${r.source === "road" ? "road route" : "estimate"}`);
+      s += routeLine(pts(r.shape), r.source === "estimate", `${esc(r.id)} ${esc(r.truck_id)}: ${r.km} km, ${r.source === "road" ? "road route" : "estimate"}${r.rev > 1 ? ", rerouted" : ""}`);
       const next = r.stops.find(x => x.status === "pending"), mid = r.shape[Math.floor(r.shape.length * 0.45)];
       const [mx, my] = at({ lat: mid[0], lng: mid[1] });
-      tags.push(tag(mx, my, `${r.truck_id}${next ? " · ETA " + hhmm(r.created_at + next.eta_min * 60) : ""}`, C.road));
+      tags.push(tag(mx, my, `${r.truck_id}${next ? " · ETA " + hhmm(etaOf(r, next)) : ""}${r.rev > 1 ? " · rerouted" : ""}`, r.warning ? C.hazard : C.road));
     }
     for (const st of r.stops) {
       const [x, y] = at(st), col = st.status === "pending" || st.status === "delivered" ? C.road : C.hazard;
@@ -1020,7 +1128,7 @@ function drawOpsMap() {
     }
   }
   for (const i of ops.incidents) {
-    if (i.status === "closed") continue;
+    if (i.status === "closed" || i.located_by === "guess") continue;  // no known place: listed, not drawn
     const [x, y] = at(i);
     if (i.status === "delivered") { s += `<circle cx="${x}" cy="${y}" r="3.5" fill="${C.road}" opacity=".7"><title>${esc(i.zone)}: ${i.requested} ${esc(i.item)} delivered</title></circle>`; continue; }
     const r = 4 + i.urgency * 1.3, waiting = i.status === "waiting";
@@ -1050,17 +1158,45 @@ function noteChanges(st) {
     if (s.status === "delivered") ev("DRIVER", "good", `${esc(r.truck_id)} stop ${s.n} ${esc(s.zone)}: delivered ${s.delivered_qty} of ${s.qty} ${esc(s.item)}`);
     else if (s.status === "blocked") {
       ev("BLOCKED", "alert", `${esc(r.truck_id)} stop ${s.n} ${esc(s.zone)}: road blocked${s.note ? " · " + esc(s.note) : ""}`);
-      ev("REROUTE", "heal", "The blocked road is now a hazard and the stop is back in the queue; the next wave routes around it.");
-    } else ev("DRIVER", "bad", `${esc(r.truck_id)} stop ${s.n} ${esc(s.zone)}: ${s.status === "failed" ? "could not deliver" : "not reached"}${s.note ? " · " + esc(s.note) : ""}`);
+      ev("HAZARD", "heal", "The blocked road is now a hazard every route avoids, and the stop is back in the queue. Trucks heading into it are rerouted.");
+    } else if (s.status === "unreachable") ev("CUT OFF", "bad", `${esc(r.truck_id)} stop ${s.n} ${esc(s.zone)}: no road reaches it any more · back in the queue, cargo returns to stock`);
+    else ev("DRIVER", "bad", `${esc(r.truck_id)} stop ${s.n} ${esc(s.zone)}: ${s.status === "failed" ? "could not deliver" : "not reached"}${s.note ? " · " + esc(s.note) : ""}`);
+  }
+  if (revSeen) for (const r of st.routes) {
+    const before = revSeen.get(r.id);
+    if (before && r.rev > before) for (const x of (r.reroutes || []).slice(before - r.rev))
+      ev("REROUTE", "heal", `${esc(r.truck_id)} ${esc(r.id)} rerouted around ${x.hazards.map(esc).join(", ")} from where it is: ${x.km_before} → ${x.km_after} km left` +
+        (x.dropped.length ? `; stop ${x.dropped.join(", ")} cut off` : "") + ". The driver's page shows the new route.");
+    if (r.warning && r.warning !== warnSeen.get(r.id)) ev("WARNING", "bad", `${esc(r.truck_id)}: ${esc(r.warning)}`);
   }
   if (routeSeen) for (const r of st.routes) if (r.status === "done" && routeSeen.get(r.id) === "active") {
     const ok = r.stops.filter(s => s.status === "delivered").length;
-    ev("LEARN", "lesson", `${esc(r.id)} closed with ${ok} of ${r.stops.length} stops delivered. The outcome is scored and arrival times update the ETA correction.`);
+    const scored = r.stops.some(s => !["blocked", "unreachable"].includes(s.status));
+    ev("LEARN", "lesson", `${esc(r.id)} closed with ${ok} of ${r.stops.length} stops delivered. ` + (scored
+      ? `The outcome is scored for ${esc(r.strategy)} and arrival times update the ETA correction.`
+      : `A road cut after dispatch is not held against ${esc(r.strategy)}; it becomes a lesson for the planner.`));
     setTimeout(refreshMemory, 300);
   }
+  if (propSeen) for (const p of st.proposals || []) {
+    const was = propSeen.get(p.id);
+    if (!was) ev(`PROPOSAL ${p.id}`, "heal", `The agent planned ${p.routes} route(s), ${p.units} units, on its own. Why now: ${esc(p.trigger)}<div class="sub">${esc(p.strategy_why)}</div>`);
+    else if (was === "pending" && p.status !== "pending")
+      ev(p.id, p.status === "approved" ? "good" : "bad", p.status === "approved" ? `Approved by ${esc(p.by)}: wave ${p.wave} sent.`
+        : p.status === "rejected" ? `Rejected by ${esc(p.by)}${p.reason ? `: ${esc(p.reason)} · saved as a lesson for the planner` : ""}.` : `${p.status === "expired" ? "Expired" : "Withdrawn"} unanswered.`);
+  }
+  if (wavesSeen !== null) for (const w of st.waves.slice(wavesSeen)) if (w.by === AGENT)
+    ev(`WAVE ${w.n}`, "good", `Dispatched by the autopilot (${esc(w.trigger || "")}): ${w.routes} route(s), ${w.units} units · <span class="sub">${esc(w.strategy_why || w.strategy)}</span>`);
+  if (hazSeen) for (const h of st.hazards) if (h.active && h.verified !== false && hazSeen.get(h.id) === false)
+    ev("CONFIRMED", "alert", `${esc(h.id)} ${esc(h.label)}: confirmed, every route now avoids it.`);
   stopSeen = new Map([...stops].map(([k, [, s]]) => [k, s.status]));
   routeSeen = new Map(st.routes.map(r => [r.id, r.status]));
+  revSeen = new Map(st.routes.map(r => [r.id, r.rev || 1]));
+  warnSeen = new Map(st.routes.map(r => [r.id, r.warning]));
+  propSeen = new Map((st.proposals || []).map(p => [p.id, p.status]));
+  hazSeen = new Map(st.hazards.map(h => [h.id, h.verified !== false]));
+  wavesSeen = st.waves.length;
 }
+let revSeen = null, warnSeen = new Map(), propSeen = null, hazSeen = null, wavesSeen = null;
 
 let opsLastOk = 0, opsFails = 0;
 function renderSync() {
@@ -1108,8 +1244,20 @@ $("queueList").addEventListener("click", e => {
   toast("Sample loaded. Add it to the incident queue.");
 });
 
-function attachMedia(fd) {
-  if ($("image").files[0]) fd.append("image", $("image").files[0]);
+// photos are resized on this device first: phone pictures are often larger than the 4 MB upload limit
+async function shrinkImage(file, max = 1600) {
+  if (!file || file.size < 900_000 || !window.createImageBitmap) return file;
+  try {
+    const img = await createImageBitmap(file), k = Math.min(1, max / Math.max(img.width, img.height));
+    const c = document.createElement("canvas");
+    c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+    c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+    const blob = await new Promise(ok => c.toBlob(ok, "image/jpeg", 0.82));
+    return blob ? new File([blob], "photo.jpg", { type: "image/jpeg" }) : file;
+  } catch { return file; }
+}
+async function attachMedia(fd) {
+  if ($("image").files[0]) fd.append("image", await shrinkImage($("image").files[0]));
   if ($("audio").files[0]) fd.append("audio", $("audio").files[0]);
   else if (recBlob) fd.append("audio", recBlob, recBlob.type === "audio/wav" ? "voice.wav" : "voice.webm");
 }
@@ -1118,7 +1266,7 @@ $("queue").onclick = async () => {
   const fd = new FormData();
   fd.append("text", $("text").value);
   fd.append("source", "console");
-  attachMedia(fd);
+  await attachMedia(fd);
   $("queue").disabled = true; $("queue").textContent = "Reading the report…"; pipeBusy();
   try {
     const r = await api("/api/reports", { method: "POST", body: fd });
@@ -1144,6 +1292,7 @@ $("wave").onclick = async () => {
     opsBusy = false;
     noteChanges(r.ops); renderOps(r.ops, r.summary);
     ev(`WAVE ${w.n}`, "good", `<span class="sub">${esc(w.strategy)}</span> · ${esc(r.reasoning)}` +
+      (r.strategy_why ? `<div class="sub">Why this strategy: ${esc(r.strategy_why)}</div>` : "") +
       r.routes.map(rt => `<div class="sub num">${esc(rt.truck_id)}: ${rt.stops.map(s => `${esc(s.zone)} ${s.qty} ${esc(s.item)} ~${s.eta_min} min`).join(" → ")} · ${rt.km} km ${rt.source === "road" ? "by road" : "(estimate)"}</div>`).join("") +
       r.plan.blocked.map(b => `<div class="num" style="color:var(--hazard)">${esc(b.need_id)}: no road route around ${b.hazards.map(esc).join(", ")}</div>`).join("") +
       [...r.plan.no_truck, ...r.plan.stockout].map(b => `<div class="num" style="color:var(--signal)">${esc(b.need_id)}: no free truck or stock at ${esc(b.depot_id)}</div>`).join(""));
@@ -1184,7 +1333,7 @@ $("opsReset").onclick = async () => {
   if (!confirm("Start a new operation? This clears incidents, routes and hazards, restocks every depot and gives every truck a new driver link.")) return;
   try {
     const r = await api("/api/ops/reset", { method: "POST" });
-    opsSeen = new Set(); stopSeen = null; routeSeen = null; renderOps(r.ops, r.summary);
+    opsSeen = new Set(); stopSeen = routeSeen = revSeen = propSeen = hazSeen = wavesSeen = null; renderOps(r.ops, r.summary);
     ev("NEW OP", "good", "New operation started: queue cleared, depots restocked, every truck has a new driver link.");
   } catch (e) { ev("ERROR", "bad", esc(e.message)); toast(e.message, { tone: "bad" }); }
 };
@@ -1227,9 +1376,35 @@ $("addDepot").onclick = async () => {
 };
 
 document.addEventListener("click", async e => {
-  const b = e.target.closest("[data-copy],[data-recall],[data-service],[data-clear],[data-close]");
+  const b = e.target.closest("[data-copy],[data-recall],[data-service],[data-clear],[data-close],[data-confirm],[data-approve],[data-reject]");
   if (!b) return;
   const d = b.dataset;
+  if (d.approve) {
+    b.disabled = true; pipeBusy();
+    try {
+      const r = await api(`/api/proposals/${d.approve}/approve`, { method: "POST" });
+      noteChanges(r.ops); renderOps(r.ops, r.summary);
+      ev(`WAVE ${r.wave.n}`, "good", `${esc(d.approve)} approved: ${r.wave.routes} route(s), ${r.wave.units} units out` +
+        r.routes.map(rt => `<div class="sub num">${esc(rt.truck_id)}: ${rt.stops.map(s => `${esc(s.zone)} ${s.qty} ${esc(s.item)}`).join(" → ")}</div>`).join(""));
+      for (const h of r.heals) { const [tag, cls] = healTag(h); ev(tag, cls, esc(h)); }
+    } catch (err) { ev("ERROR", "bad", esc(err.message)); toast(err.message, { tone: "bad" }); refreshOps(); }
+    finally { pipeDone(); b.disabled = false; }
+    return;
+  }
+  if (d.reject) {
+    const why = prompt("Why reject this plan? The agent keeps the reason as a lesson (for example: that camp is already served).");
+    if (why !== null) admin(() => postJSON(`/api/proposals/${d.reject}/reject`, { reason: why }), `${d.reject} rejected.`).then(refreshMemory);
+    return;
+  }
+  if (d.confirm) {
+    try {
+      const r = await api(`/api/ops/hazards/${d.confirm}/confirm`, { method: "POST" });
+      noteChanges(r.ops); renderOps(r.ops, r.summary);
+      toast(`${d.confirm} confirmed. ${r.rerouted.filter(x => x.changed).length} truck(s) rerouted.`, { tone: "ok" });
+      for (const h of r.heals) { const [tag, cls] = healTag(h); ev(tag, cls, esc(h)); }
+    } catch (err) { toast(err.message, { tone: "bad" }); }
+    return;
+  }
   if (d.copy) {
     try { await navigator.clipboard.writeText(d.copy); b.textContent = "Copied"; } catch { b.textContent = "Copy failed"; }
     setTimeout(() => { b.textContent = "Copy link"; }, 1500);
