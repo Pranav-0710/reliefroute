@@ -57,13 +57,13 @@ def _call(name, args):
     if name == "get_operation":
         st = ops.load()
         return {"summary": ops.summary(st),
-                "waiting": [{k: i[k] for k in ("id", "zone", "item", "qty", "urgency", "note")}
+                "waiting": [{k: i[k] for k in ("id", "zone", "item", "qty", "urgency")}
                             for i in st["incidents"] if i["qty"] > 0 and not i["closed"]],
                 "routes": [{"id": r["id"], "truck": r["truck_id"],
                             "stops": [{k: s[k] for k in ("zone", "item", "qty", "status", "eta_min")} for s in r["stops"]]}
                            for r in st["routes"] if r["status"] == "active"],
                 "hazards": [h["label"] for h in st["hazards"] if h["active"]]}
-    mem = agent.load_memory()
+    mem = agent.public_memory(agent.load_memory())
     return {"lessons": mem["lessons"], "policy": mem["bandit"], "episodes": mem["episodes"][-20:]}
 
 

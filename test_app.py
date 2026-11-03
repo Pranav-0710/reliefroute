@@ -621,8 +621,8 @@ def test_field_outcomes_choose_the_live_strategy(monkeypatch):
     import ops
 
     monkeypatch.setattr(agent.policy, "available", lambda: False)
-    bandit = {"urgency_first": {"n": 10, "mean": 80.0}, "nearest_first": {"n": 10, "mean": 70.0}}
-    _set_memory(bandit=bandit, field={"strategies": {"urgency_first": {"n": 1, "mean": 10.0}}, "routes": []})
+    trained = {"urgency_first": {"n": 10, "mean": 80.0}, "nearest_first": {"n": 10, "mean": 70.0}}
+    _set_memory(trusted_bandit=trained, field={"strategies": {"urgency_first": {"n": 1, "mean": 10.0}}, "routes": []})
     c = agent.choose_live_strategy(agent.load_memory())
     assert c["strategy"] == "urgency_first"  # one bad route is not enough evidence
     _set_memory(field={"strategies": {"urgency_first": {"n": 3, "mean": 40.0}, "nearest_first": {"n": 3, "mean": 98.0}},
@@ -937,3 +937,265 @@ def test_autopilot_endpoints_need_a_coordinator_or_the_scheduler_secret(monkeypa
     assert all("@" not in str(x.get("by")) for x in pub["log"] + pub["waves"] + pub["proposals"])
     assert c.get("/api/ops", headers=good).json()["ops"]["waves"][-1]["by"] == "lead@example.org"
     main._hits.clear()
+
+
+# ---- fixes from the code review ----------------------------------------------------------------------
+def _sign_in_on(monkeypatch):
+    import auth
+
+    monkeypatch.setenv("COORDINATOR_EMAILS", "lead@example.org")
+    monkeypatch.setenv("FIREBASE_WEB_API_KEY", "web-key")
+    monkeypatch.setenv("FIREBASE_PROJECT_ID", "relief-test")
+    monkeypatch.setattr(auth, "_verified", {})
+
+    def verify(token):
+        if token != "good":
+            raise ValueError("bad signature")
+        return {"email": "lead@example.org", "email_verified": True, "exp": 9e12}
+    monkeypatch.setattr(auth, "_verify", verify)
+    return {"Authorization": "Bearer good"}
+
+
+def test_a_late_driver_update_never_lands_on_the_next_route():
+    import ops
+
+    ops.add_report({"summary": "t", "hazards": [], "needs": [_need("Adyar", "food", 60)]})
+    first = ops.run_wave()["routes"][0]
+    tok = _tokens()[first["truck_id"]]
+    ops.recall_route(first["id"])  # the driver has no signal, and is recalled
+    ops.close_incident("I1")
+    for t in ops.load()["trucks"]:
+        if t["id"] != first["truck_id"]:
+            ops.set_truck(t["id"], in_service=False)
+    ops.add_report({"summary": "t", "hazards": [], "needs": [_need("Porur", "water", 30)]})
+    second = ops.run_wave()["routes"][0]
+    assert second["truck_id"] == first["truck_id"] and second["stops"][0]["n"] == first["stops"][0]["n"]
+    stock = {d["id"]: dict(d["stock"]) for d in ops.load()["depots"]}
+
+    out = ops.driver_update(tok, first["stops"][0]["n"], "delivered", route_id=first["id"], note="handed to the camp")
+    st = ops.load()
+    assert out["late"]["zone"] == "Adyar" and out["late"]["qty"] == 60 and not out["closed"]
+    porur = ops._find(st["incidents"], "id", "I2")
+    assert porur["status"] == "en_route" and porur["delivered"] == 0  # the family in Porur is not written off
+    assert ops._find(st["routes"], "id", second["id"])["stops"][0]["status"] == "pending"
+    assert {d["id"]: d["stock"] for d in st["depots"]} == stock
+    assert any("Late report" in l["text"] for l in st["log"])
+    again = ops.driver_update(tok, first["stops"][0]["n"], "delivered", route_id=first["id"])
+    assert again["late"] == out["late"]  # the phone repeating itself adds no second report
+    assert len(ops._find(ops.load()["routes"], "id", first["id"])["late_reports"]) == 1
+    # an update for the route it was meant for still counts, and another truck cannot report on this route
+    other = next(t["token"] for t in st["trucks"] if t["id"] != first["truck_id"])
+    with pytest.raises(ops.OpsError, match="no active route"):
+        ops.driver_update(other, second["stops"][0]["n"], "delivered", route_id=second["id"])
+    done = ops.driver_update(tok, second["stops"][0]["n"], "delivered", route_id=second["id"])
+    assert done["closed"] and done["late"] is None
+    assert ops._find(ops.load()["incidents"], "id", "I2")["status"] == "delivered"
+
+
+def test_a_report_for_a_stop_cut_off_meanwhile_is_a_late_report_not_a_delivery(monkeypatch):
+    import ops
+
+    ops.add_report({"summary": "t", "hazards": [], "needs": [_need("Adyar", "food", 60, 5)]})
+    inc = ops._find(ops.load()["incidents"], "id", "I1")
+    _fake_router(monkeypatch, cut={(round(inc["lat"], 4), round(inc["lng"], 4))})
+    route = ops.run_wave()["routes"][0]
+    lat, lng = _first_leg_midpoint(route)
+    ops._update(lambda st: ops._add_hazard(st, "Bridge gone", lat, lng, 0.5, "driver"))
+    ops.reroute_affected(["H1"])
+    out = ops.driver_update(_tokens()[route["truck_id"]], route["stops"][0]["n"], "delivered", route_id=route["id"])
+    st = ops.load()
+    i1 = ops._find(st["incidents"], "id", "I1")
+    assert out["late"] and i1["qty"] == 60 and "check before sending" in i1["note"]
+
+
+def test_a_report_never_returns_what_someone_else_wrote():
+    import main
+
+    main._hits.clear()
+    c = TestClient(main.app)
+    c.post("/api/reports", data={"text": "14 Lake Street ask for Lakshmi need food in Velachery", "source": "phone",
+                                 "lat": "12.97912", "lng": "80.22134"})
+    r = c.post("/api/reports", data={"text": "food in Velachery"}).json()
+    assert r["merged"] == [{"id": "I1", "zone": "Velachery", "item": "food", "requested": 50, "reports": 2}]
+    main._hits.clear()
+
+
+def test_the_public_never_sees_drivers_words_or_exact_positions_in_proposals(monkeypatch):
+    import main
+    import ops
+
+    main._hits.clear()
+    good = _sign_in_on(monkeypatch)
+    c = TestClient(main.app)
+    ops.add_report({"summary": "t", "hazards": [], "needs": [_need("Adyar", "food", 60, 5), _need("Ennore", "water", 40)]})
+    w = ops.run_wave()
+    tok = _tokens()
+    a, b = w["routes"][:2]
+    ops.driver_update(tok[a["truck_id"]], a["stops"][0]["n"], "failed", note="ask for Lakshmi at number 14")
+    ops.recall_route(b["id"])
+    ops.driver_update(tok[b["truck_id"]], b["stops"][0]["n"], "delivered", route_id=b["id"], note="gave it to Ravi")
+    ops._update(lambda st: st["proposals"].append({
+        "id": "P1", "status": "pending", "expires_at": 9e12, "plans": [], "heals": ["secret"],
+        "info": {"blocked": [{"need_id": "I1", "from": {"lat": 12.97912, "lng": 80.22134}}], "no_truck": [], "stockout": []}}))
+    public = c.get("/api/ops").text
+    for secret in ("Lakshmi", "Ravi", "12.97912", "secret"):
+        assert secret not in public
+    assert "Lakshmi" in c.get("/api/ops", headers=good).text  # coordinators still see it
+    mem = c.get("/api/memory").json()
+    assert "Lakshmi" not in str(mem) and any("failed" in l for l in mem["field"]["lessons"])
+    assert "Lakshmi" in str(c.get("/api/memory", headers=good).json())
+    rpc = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "get_memory", "arguments": {}}}
+    assert "Lakshmi" not in c.post("/mcp", json=rpc).text
+    rpc["params"]["name"] = "get_operation"
+    assert "Lakshmi" not in c.post("/mcp", json=rpc).text
+    main._hits.clear()
+
+
+def test_a_hazard_needs_a_second_source_to_be_confirmed(monkeypatch):
+    import main
+    import ops
+
+    main._hits.clear()
+    a, b = {"label": "road flooded", "lat": 13.02, "lng": 80.24}, {"label": "bridge under water", "lat": 13.021, "lng": 80.24}
+    one = ops.add_report({"summary": "t", "needs": [], "hazards": [a, b]}, client="10.0.0.1")
+    st = ops.load()
+    assert one["confirmed"] == [] and len(st["hazards"]) == 1 and not st["hazards"][0]["verified"]  # one report, one hazard
+    assert ops.add_report({"summary": "t", "needs": [], "hazards": [a]}, client="10.0.0.1")["confirmed"] == []  # same phone
+    assert ops.add_report({"summary": "t", "needs": [], "hazards": [b]}, client="10.0.0.2")["confirmed"] == ["H1"]
+    st = ops.load()
+    assert st["hazards"][0]["verified"] and st["hazards"][0]["confirmations"] == 2
+    assert "10.0.0" not in str(st)  # addresses are only kept hashed
+    # over the API: the hashes and their salt never leave the server
+    monkeypatch.setattr(agent, "intake", lambda *args, **kw: {"summary": "s", "language": "en", "needs": [], "hazards": [
+        {"label": "x", "lat": 13.1, "lng": 80.2}]})
+    c = TestClient(main.app)
+    first = c.post("/api/reports", data={"text": "x"}, headers={"x-forwarded-for": "203.0.113.1"}).json()
+    assert first["unconfirmed"] and not first["confirmed"]
+    assert not c.post("/api/reports", data={"text": "x"}, headers={"x-forwarded-for": "203.0.113.1"}).json()["confirmed"]
+    second = c.post("/api/reports", data={"text": "x"}, headers={"x-forwarded-for": "203.0.113.2"}).json()
+    assert second["confirmed"] == first["unconfirmed"]
+    assert "reporters" not in str(second["ops"]) and "client_salt" not in str(second["ops"])
+    ops.add_report({"summary": "t", "hazards": [], "needs": [_need("Adyar", "food", 60)]})
+    route = ops.run_wave()["routes"][0]
+    assert "reporters" not in str(ops.driver_view(_tokens()[route["truck_id"]]))
+    main._hits.clear()
+
+
+def test_planners_only_use_depots_that_have_a_free_truck(monkeypatch):
+    import ops
+
+    monkeypatch.setattr(agent.policy, "available", lambda: False)
+    for strategy in ("urgency_first", "nearest_first"):
+        ops.reset()
+        _set_memory(trusted_bandit={strategy: {"n": 5, "mean": 80.0}})
+        for t in ops.load()["trucks"]:
+            if t["depot_id"] == "D1":
+                ops.set_truck(t["id"], in_service=False)
+        ops.add_report({"summary": "t", "hazards": [], "needs": [_need("Velachery", "food", 60, 5)]})  # nearest depot is D1
+        w = ops.run_wave()
+        assert w["strategy"] == strategy and len(w["routes"]) == 1 and w["routes"][0]["depot_id"] != "D1", strategy
+    env = ReliefEnv()
+    obs = env.reset(seed=4, chaos=False)
+    obs["depots"][0]["trucks"] = []
+    heals = []
+    fixed = agent.repair(obs, [{"need_id": obs["pending_needs"][0]["id"], "depot_id": obs["depots"][0]["id"]}], heals)
+    assert all(a["depot_id"] != obs["depots"][0]["id"] for a in fixed) and heals  # an LLM plan cannot pick it either
+
+
+def test_anonymous_simulator_runs_cannot_steer_live_dispatch(monkeypatch):
+    import main
+
+    main._hits.clear()
+    good = _sign_in_on(monkeypatch)
+    c = TestClient(main.app)
+    agent.record_field_route({"route": "R1", "strategy": "urgency_first", "stops": [
+        {"zone": "Adyar", "urgency": 5, "qty": 10, "delivered_qty": 0, "status": "failed", "note": "camp moved",
+         "eta_raw": 10, "actual_min": 20}]})
+    agent.add_lesson("Coordinator rejected a rl_policy plan: Porur is served")
+    before = c.get("/api/memory", headers=good).json()
+    for _ in range(3):
+        assert c.post("/api/train", json={"episodes": 8}).status_code == 200  # anyone can still use the Simulator
+    c.post("/api/dispatch", data={"text": "50 blankets needed in Adyar"})
+    after = c.get("/api/memory", headers=good).json()
+    assert len(after["episodes"]) > 20 and any(v["n"] for v in after["bandit"].values())  # the Simulator learned
+    assert after["live_choice"] == before["live_choice"] and after["trusted_bandit"] == before["trusted_bandit"]
+    assert after["field"]["lessons"] == before["field"]["lessons"] and len(after["field"]["lessons"]) == 2
+    c.post("/api/train", json={"episodes": 3}, headers=good)
+    trusted = c.get("/api/memory", headers=good).json()["trusted_bandit"]
+    assert sum(v["n"] for v in trusted.values()) == 3  # a coordinator's training run does count
+    agent.sync_memory({"episodes": [{}] * 500, "bandit": {}, "lessons": ["evil"]})  # a browser copy cannot touch it either
+    assert agent.load_memory()["trusted_bandit"] == trusted
+    main._hits.clear()
+
+
+def test_switching_the_autopilot_off_stops_a_plan_in_flight(monkeypatch):
+    import autopilot
+    import ops
+
+    real = ops.plan_wave
+    for mode in ("auto", "propose"):
+        ops.reset()
+        ops._update(lambda st: st["autopilot"].update(approved=1))
+        autopilot.configure(mode)
+        ops.add_report({"summary": "t", "hazards": [], "needs": [_need("Adyar", "food", 60, 5)]})
+
+        def switched_off(*args, **kw):
+            autopilot.configure("off")
+            return real(*args, **kw)
+        monkeypatch.setattr(ops, "plan_wave", switched_off)
+        t = autopilot.tick()
+        monkeypatch.setattr(ops, "plan_wave", real)
+        st = ops.load()
+        assert not t["acted"] and "switched to off" in t["why"], mode
+        assert not st["routes"] and not st["proposals"] and st["autopilot"]["lease_id"] is None, mode
+        i1 = ops._find(st["incidents"], "id", "I1")
+        assert i1["qty"] == 60 and i1["assigned"] == 0
+    # a lease that ran out and went to another instance: this plan must not go out
+    ops.reset()
+    autopilot.configure("propose")
+    ops.add_report({"summary": "t", "hazards": [], "needs": [_need("Adyar", "food", 60, 5)]})
+
+    def overtaken(*args, **kw):
+        ops._update(lambda st: st["autopilot"].update(lease_id="other", lease_until=9e12))
+        return real(*args, **kw)
+    monkeypatch.setattr(ops, "plan_wave", overtaken)
+    t = autopilot.tick()
+    st = ops.load()
+    assert not t["acted"] and "lease" in t["why"] and not st["proposals"] and st["autopilot"]["lease_id"] == "other"
+
+
+def test_approving_a_proposal_reroutes_around_a_hazard_confirmed_since_it_was_planned(monkeypatch):
+    import autopilot
+    import ops
+
+    _fake_router(monkeypatch)
+    autopilot.configure("propose")
+    ops.add_report({"summary": "t", "hazards": [], "needs": [_need("Adyar", "food", 60, 5)]})
+    p = autopilot.tick()["proposal"]
+    plan = p["plans"][0]
+    lat, lng = plan["shape"][len(plan["shape"]) // 2]
+    ops._update(lambda st: ops._add_hazard(st, "Bridge gone", lat, lng, 0.5, "driver"))  # after the plan was made
+    out = autopilot.approve(p["id"], "lead@example.org")
+    route = out["routes"][0]
+    assert out["rerouted"][0]["changed"] and route["rev"] == 2 and route["reroutes"][0]["hazards"] == ["H1"]
+    assert route["shape"] != plan["shape"] and route["km"] > plan["km"]
+    assert out["ops"]["routes"][0]["rev"] == 2
+
+
+def test_no_truck_is_sent_when_the_router_says_no_road_reaches_a_stop(monkeypatch):
+    import ops
+
+    ops.add_report({"summary": "t", "hazards": [], "needs": [_need("Adyar", "food", 60, 5), _need("Ennore", "water", 50, 4)]})
+    st = ops.load()
+    adyar = ops._find(st["incidents"], "id", "I1")
+    stock = {d["id"]: dict(d["stock"]) for d in st["depots"]}
+    _fake_router(monkeypatch, cut={(round(adyar["lat"], 4), round(adyar["lng"], 4))})
+    ops._update(lambda st: ops._add_hazard(st, "Bridge gone", 13.0, 80.3, 0.5, "driver"))
+    w = ops.run_wave()
+    assert [s["zone"] for r in w["routes"] for s in r["stops"]] == ["Ennore"]
+    assert all(r["source"] == "road" for r in w["routes"])  # never a straight line through the flood
+    assert any("No road reaches Adyar" in h for h in w["heals"]) and w["plan"]["blocked"][0]["need_id"] == "I1"
+    st = ops.load()
+    i1 = ops._find(st["incidents"], "id", "I1")
+    assert i1["status"] == "waiting" and i1["qty"] == 60 and i1["assigned"] == 0 and "no road route" in i1["note"]
+    assert sum(d["stock"]["food"] for d in st["depots"]) == sum(v["food"] for v in stock.values())

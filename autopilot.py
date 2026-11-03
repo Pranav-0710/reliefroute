@@ -15,6 +15,8 @@ calling POST /api/agent/tick with AGENT_TICK_SECRET. Servers are stateless, so a
 document (claimed with the same conditional write as everything else) keeps two instances from
 planning at once.
 """
+import secrets
+
 import agent
 import ops
 
@@ -64,9 +66,24 @@ def should_plan(st, now):
 
 def _release(st, now, considered=None):
     ap = st["autopilot"]
-    ap.update(lease_until=0, last_plan_at=now, dirty=None)
+    ap.update(lease_until=0, lease_id=None, last_plan_at=now, dirty=None)
     if considered is not None:
         ap["considered"] = considered[-200:]
+
+
+def _still_ours(st, mode, lease):
+    """Planning takes a while, and nothing may go out if the coordinator changed the mode meanwhile or the
+    lease ran out and another instance took over. Raising cancels the write this runs in."""
+    ap = st["autopilot"]
+    if ap["mode"] != mode:
+        raise ops.OpsError(f"the autopilot was switched to {ap['mode']} while planning; this plan was dropped")
+    if ap["lease_id"] != lease:
+        raise ops.OpsError("planning took too long and the lease ran out; this plan was dropped")
+
+
+def _drop_lease(st, lease):
+    if st["autopilot"]["lease_id"] == lease:
+        st["autopilot"].update(lease_until=0, lease_id=None)
 
 
 def _light(plans):
@@ -87,12 +104,14 @@ def tick(now=None):
     if not ok:  # the common case: no write at all
         return {"acted": False, "why": why, "heals": []}
 
+    lease = secrets.token_hex(8)
+
     def claim(st):
         _expire(st, now)
         ok, why = should_plan(st, now)
         if not ok:
             raise ops.OpsError(why)
-        st["autopilot"]["lease_until"] = now + LEASE_S
+        st["autopilot"].update(lease_until=now + LEASE_S, lease_id=lease)
         return why, st["autopilot"]["mode"]
     try:
         why, mode = ops._update(claim)
@@ -103,14 +122,15 @@ def tick(now=None):
     try:
         planned = ops.plan_wave(ops.load(), heals, skip_unlocated=True)
     except Exception as e:
-        ops._update(lambda st: _release(st, now))
+        ops._update(lambda st: _drop_lease(st, lease))
         if isinstance(e, ops.OpsError):
             return {"acted": False, "why": str(e), "heals": heals}
         raise
     considered = planned["needs"]
     if not planned["plans"]:
         def nothing(st):
-            _release(st, now, considered)
+            if st["autopilot"]["lease_id"] == lease:
+                _release(st, now, considered)
             ops._log(st, AGENT, f"Planned for {len(considered)} request(s) ({why}) but no truck could take any "
                                 f"stop (stock or capacity)")
         ops._update(nothing)
@@ -118,13 +138,19 @@ def tick(now=None):
 
     if mode == "auto":
         def done(st, wave):
+            _still_ours(st, mode, lease)
             _release(st, now, considered)
             wave["trigger"] = why
-        out = ops.commit_wave(planned, AGENT, heals, hook=done)
+        try:
+            out = ops.commit_wave(planned, AGENT, heals, hook=done)
+        except ops.OpsError as e:
+            ops._update(lambda st: _drop_lease(st, lease))
+            return {"acted": False, "why": str(e), "heals": heals}
         return {"acted": True, "why": why, "wave": out["wave"], "routes": out["routes"], "heals": out["heals"],
                 "strategy_why": out["strategy_why"], "reasoning": out["reasoning"]}
 
     def propose(st):
+        _still_ours(st, mode, lease)
         _release(st, now, considered)
         n = max([int(p["id"][1:]) for p in st["proposals"]] + [0]) + 1
         p = {"id": f"P{n}", "at": now, "expires_at": now + PROPOSAL_TTL_S, "trigger": why, "status": "pending",
@@ -137,7 +163,11 @@ def tick(now=None):
         ops._log(st, AGENT, f"Proposed {p['id']} ({why}): {p['routes']} route(s), {p['units']} units, "
                             f"strategy {p['strategy']}")
         return p
-    return {"acted": True, "why": why, "proposal": ops._update(propose), "heals": heals}
+    try:
+        return {"acted": True, "why": why, "proposal": ops._update(propose), "heals": heals}
+    except ops.OpsError as e:
+        ops._update(lambda st: _drop_lease(st, lease))
+        return {"acted": False, "why": str(e), "heals": heals}
 
 
 def approve(proposal_id, actor):

@@ -454,7 +454,9 @@
       <div class="sec-h" style="margin-top:14px"><h2>Strategy for the next wave</h2></div>
       <p class="hint" id="choiceWhy" style="margin-bottom:8px"></p>
       <table class="stock choice" id="choice"></table>
-      <p class="hint" style="margin-top:8px">Expected = what drivers delivered on that strategy's routes, weighed against its simulator score until real routes outnumber it. Roads cut after dispatch do not count against a strategy. Arrival times correct future ETAs; failed and blocked stops become lessons.</p>
+      <p class="hint" style="margin-top:8px">Expected = what drivers delivered on that strategy's routes, weighed against its score in coordinator-run training until real routes outnumber it. Anonymous Simulator runs do not count, and neither do roads cut after dispatch. Arrival times correct future ETAs; failed and blocked stops become lessons.</p>
+      <div class="sec-h" style="margin-top:14px"><h2>Lessons for live waves</h2></div>
+      <ol class="lessons" id="liveLessons"></ol>
     </div>
     <div class="sec off" data-show="ops" data-pane="activity" role="tabpanel">
       <div class="sec-h"><h2>Activity</h2><span class="count">who did what</span></div>
@@ -476,7 +478,7 @@
       <div id="bandit"></div>
       <p class="hint" style="margin-top:8px">Mostly uses the best-scoring strategy, tries the others 20% of the time.</p>
     </div>
-    <div class="sec off" data-pane="learning">
+    <div class="sec" data-show="sim">
       <div class="sec-h"><h2>Lessons in memory</h2></div>
       <ol class="lessons" id="lessons"></ol>
     </div>
@@ -1079,13 +1081,15 @@ function renderActivity(st) {
 }
 
 function renderField(mem) {
-  const f = mem.field || { strategies: {}, routes: [] };
+  const f = mem.field || { strategies: {}, routes: [], lessons: [] };
   const scored = f.routes.filter(r => r.score !== null && r.score !== undefined);
   const n = f.routes.length, avg = scored.length ? mean(scored.map(r => r.score)) : null;
   $("fieldFigs").innerHTML = `<div><b>${n}</b><span>routes closed</span></div>` +
     `<div><b>${avg === null ? "–" : avg.toFixed(0) + "%"}</b><span>loaded relief delivered</span></div>` +
     `<div><b>×${(mem.eta_factor ?? 1).toFixed(2)}</b><span>learned ETA correction</span></div>` +
-    `<div><b>${mem.lessons.filter(l => l.startsWith("Field:") || l.startsWith("Coordinator")).length}</b><span>field lessons</span></div>`;
+    `<div><b>${f.lessons.length}</b><span>field lessons</span></div>`;
+  $("liveLessons").innerHTML = f.lessons.map(l => `<li>${esc(l)}</li>`).join("") ||
+    `<li class="hint" style="list-style:none;margin-left:-20px">None yet. Failed and blocked stops and rejected plans end up here.</li>`;
   const c = mem.live_choice;
   if (!c) return;
   const pct = (v, n) => v === null || v === undefined ? "–" : `${v.toFixed(0)}%<span class="sr-only"> over ${n}</span>`;
@@ -1168,6 +1172,12 @@ function noteChanges(st) {
       ev("REROUTE", "heal", `${esc(r.truck_id)} ${esc(r.id)} rerouted around ${x.hazards.map(esc).join(", ")} from where it is: ${x.km_before} → ${x.km_after} km left` +
         (x.dropped.length ? `; stop ${x.dropped.join(", ")} cut off` : "") + ". The driver's page shows the new route.");
     if (r.warning && r.warning !== warnSeen.get(r.id)) ev("WARNING", "bad", `${esc(r.truck_id)}: ${esc(r.warning)}`);
+    const lateBefore = lateSeen.get(r.id);
+    if (lateBefore !== undefined) for (const x of (r.late_reports || []).slice(lateBefore)) {
+      const what = x.outcome === "delivered" ? `delivered ${x.qty} ${esc(x.item)}` : esc(x.outcome);
+      ev("LATE", "bad", `${esc(r.truck_id)} says it ${what} at ${esc(x.zone)} after ${esc(r.id)} gave up on that stop. Check before sending another truck.`);
+      toast(`${r.truck_id} reported ${x.outcome} at ${x.zone} after its route gave up on that stop. Check before dispatching it again.`, { tone: "bad", ms: 12000 });
+    }
   }
   if (routeSeen) for (const r of st.routes) if (r.status === "done" && routeSeen.get(r.id) === "active") {
     const ok = r.stops.filter(s => s.status === "delivered").length;
@@ -1192,11 +1202,12 @@ function noteChanges(st) {
   routeSeen = new Map(st.routes.map(r => [r.id, r.status]));
   revSeen = new Map(st.routes.map(r => [r.id, r.rev || 1]));
   warnSeen = new Map(st.routes.map(r => [r.id, r.warning]));
+  lateSeen = new Map(st.routes.map(r => [r.id, (r.late_reports || []).length]));
   propSeen = new Map((st.proposals || []).map(p => [p.id, p.status]));
   hazSeen = new Map(st.hazards.map(h => [h.id, h.verified !== false]));
   wavesSeen = st.waves.length;
 }
-let revSeen = null, warnSeen = new Map(), propSeen = null, hazSeen = null, wavesSeen = null;
+let revSeen = null, warnSeen = new Map(), lateSeen = new Map(), propSeen = null, hazSeen = null, wavesSeen = null;
 
 let opsLastOk = 0, opsFails = 0;
 function renderSync() {

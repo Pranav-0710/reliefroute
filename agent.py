@@ -61,10 +61,15 @@ def _fill(mem):
     mem.setdefault("lessons", [])
     mem.setdefault("episodes", [])
     mem.setdefault("bandit", {})
-    mem.setdefault("field", {"strategies": {}, "routes": []})
+    # field and trusted_bandit steer live dispatch, so only real routes, coordinators and coordinator-run
+    # training write them; lessons, episodes and bandit belong to the public Simulator
+    mem.setdefault("field", {"strategies": {}, "routes": [], "lessons": []})
+    mem["field"].setdefault("lessons", [])
+    mem.setdefault("trusted_bandit", {})
     mem.setdefault("eta_factor", 1.0)  # learned: actual drive time / router estimate
     for s in STRATEGIES:
         mem["bandit"].setdefault(s, {"n": 0, "mean": 0.0})
+        mem["trusted_bandit"].setdefault(s, {"n": 0, "mean": 0.0})
     return mem
 
 
@@ -95,14 +100,23 @@ def sync_memory(client_mem):
 
     def adopt(mem):
         if len(clean["episodes"]) > len(mem["episodes"]):
-            mem.clear()
-            mem.update(clean)
+            mem.update(clean)  # the Simulator's part only: a browser never sets what live dispatch reads
     update_memory(adopt)
 
 
 def reset_memory():
-    update_memory(lambda mem: mem.update(lessons=[], episodes=[], bandit={}, field={"strategies": {}, "routes": []},
-                                         eta_factor=1.0))
+    update_memory(lambda mem: mem.update(lessons=[], episodes=[], bandit={}, trusted_bandit={},
+                                         field={"strategies": {}, "routes": [], "lessons": []}, eta_factor=1.0))
+
+
+def public_memory(mem):
+    """Memory as anyone may read it: a lesson says what happened, not the words a driver or coordinator typed."""
+    def plain(lesson):
+        if lesson.startswith("Field:"):
+            return re.sub(r" \(.*\);", ";", lesson)
+        return lesson.split(":")[0] if lesson.startswith("Coordinator rejected") else lesson
+    return {**mem, "lessons": [plain(l) for l in mem["lessons"]],
+            "field": {**mem["field"], "lessons": [plain(l) for l in mem["field"]["lessons"]]}}
 
 
 def select_strategy(mem, explore=True):
@@ -304,7 +318,7 @@ def heuristic_plan(obs, strategy):
     out = []
     for n in needs:
         opts = obs["route_matrix"][n["id"]]
-        ids = [d["id"] for d in obs["depots"] if stock[d["id"]].get(n["item"], 0) > 0]
+        ids = [d["id"] for d in obs["depots"] if d["trucks"] and stock[d["id"]].get(n["item"], 0) > 0]
         if not ids:
             continue
         if strategy == "fifo":  # naive: first depot with stock, ignores hazards
@@ -345,7 +359,7 @@ def llm_plan(obs, lessons, heals):
 def repair(obs, assignments, heals):
     """Guardrail: validate an LLM plan against the observation and heal what is wrong."""
     pend = {n["id"] for n in obs["pending_needs"]}
-    depots = {d["id"] for d in obs["depots"]}
+    depots = {d["id"] for d in obs["depots"] if d["trucks"]}  # a depot with no free truck cannot deliver
     good, seen = [], set()
     for a in assignments if isinstance(assignments, list) else []:
         if not (isinstance(a, dict) and a.get("need_id") in pend and a.get("depot_id") in depots
@@ -437,12 +451,13 @@ def choose_live_strategy(mem):
 
     Expected score = the field mean (urgency-weighted share of loaded relief that drivers delivered),
     shrunk towards the simulator mean: (n_field * field + FIELD_PRIOR * sim) / (n_field + FIELD_PRIOR).
-    So the simulator decides until real routes exist, and what drivers report takes over as they close."""
+    So the simulator decides until real routes exist, and what drivers report takes over as they close.
+    The simulator mean counts only coordinator-run training: anonymous Simulator runs cannot steer this."""
     usable = [s for s in STRATEGIES if s != "fifo" and (s != "llm" or llm_available())
               and (s != "rl_policy" or policy.available())]
     scores = {}
     for s in usable:
-        sim, f = mem["bandit"][s], mem["field"]["strategies"].get(s, {"n": 0, "mean": 0.0})
+        sim, f = mem["trusted_bandit"][s], mem["field"]["strategies"].get(s, {"n": 0, "mean": 0.0})
         n_f = f["n"] if f["n"] >= FIELD_MIN else 0
         if n_f and sim["n"]:
             blended = (n_f * f["mean"] + FIELD_PRIOR * sim["mean"]) / (n_f + FIELD_PRIOR)
@@ -471,7 +486,8 @@ def best_strategy(mem):
 
 
 def run_episode(seed=None, extra_needs=None, extra_hazards=None, chaos=True, strategy=None,
-                use_maps=False, explore=True):
+                use_maps=False, explore=True, trusted=False):
+    """trusted: a coordinator's training run, whose score may also inform the live strategy choice."""
     env = ReliefEnv()
     obs = env.reset(seed=seed, extra_needs=extra_needs, extra_hazards=extra_hazards, chaos=chaos)
     mem = load_memory()
@@ -509,9 +525,9 @@ def run_episode(seed=None, extra_needs=None, extra_hazards=None, chaos=True, str
                 d["eta"] = maps_eta((dp["lat"], dp["lng"]), (n["lat"], n["lng"]), heals)
 
     def record(mem):  # atomic: other instances may be training at the same time
-        arm = mem["bandit"][strategy]
-        arm["n"] += 1
-        arm["mean"] = round(arm["mean"] + (score - arm["mean"]) / arm["n"], 2)
+        for arm in [mem["bandit"][strategy]] + ([mem["trusted_bandit"][strategy]] if trusted else []):
+            arm["n"] += 1
+            arm["mean"] = round(arm["mean"] + (score - arm["mean"]) / arm["n"], 2)
         for l in new_lessons:
             if l not in mem["lessons"]:
                 mem["lessons"].append(l)
@@ -568,9 +584,7 @@ def record_field_route(outcome):
         for r in ratios:
             mem["eta_factor"] = round((1 - ETA_LEARN_RATE) * mem["eta_factor"] + ETA_LEARN_RATE * r, 3)
         for l in lessons:
-            if l not in mem["lessons"]:
-                mem["lessons"].append(l)
-        mem["lessons"] = mem["lessons"][-8:]
+            _keep_lesson(mem, l)
         return mem["eta_factor"]
     factor = update_memory(rec)
     return {"score": score, "lessons": lessons, "eta_samples": len(ratios), "eta_factor": factor}
@@ -578,14 +592,19 @@ def record_field_route(outcome):
 
 def add_lesson(text):
     """A lesson from outside an episode (a coordinator rejecting a plan), used by the next LLM plans."""
-    def add(mem):
-        if text not in mem["lessons"]:
-            mem["lessons"] = (mem["lessons"] + [str(text)[:160]])[-8:]
-    update_memory(add)
+    update_memory(lambda mem: _keep_lesson(mem, str(text)[:160]))
 
 
-def train(episodes=5, chaos=True):
-    results = [run_episode(chaos=chaos) for _ in range(episodes)]
+def _keep_lesson(mem, text):
+    """A lesson from real operations: live waves read it, and the Simulator's planner may learn from it too.
+    It has its own list so that Simulator episodes cannot push it out."""
+    for owner in (mem["field"], mem):
+        if text not in owner["lessons"]:
+            owner["lessons"] = (owner["lessons"] + [text])[-8:]
+
+
+def train(episodes=5, chaos=True, trusted=False):
+    results = [run_episode(chaos=chaos, trusted=trusted) for _ in range(episodes)]
     summary = [{"strategy": r["strategy"], "reward": r["total_reward"], "score": r["score"],
                 "heals": len(r["heals"])} for r in results]
     return summary, results[-1]

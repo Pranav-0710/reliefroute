@@ -139,15 +139,16 @@ async def dispatch(request: Request, text: str = Form(""), chaos: bool = Form(Tr
                                   strategy="llm" if agent.llm_available() else None, use_maps=True,
                                   explore=False))
     result["heals"] = heals + result["heals"]
-    return {"intake": report, **result, "memory": agent.load_memory()}
+    return {"intake": report, **result, "memory": _memory_out(request)}
 
 
 @app.post("/api/train")
 def train(req: TrainReq, request: Request):
     check_rate(request, "train")
     agent.sync_memory(req.memory)
-    episodes, last = agent.train(max(1, min(20, req.episodes)), req.chaos)
-    return {"episodes": episodes, "last": last, "memory": agent.load_memory()}
+    # anyone may train the Simulator; only a coordinator's run may inform the live strategy choice
+    episodes, last = agent.train(max(1, min(20, req.episodes)), req.chaos, trusted=is_coordinator(request))
+    return {"episodes": episodes, "last": last, "memory": _memory_out(request)}
 
 
 @app.get("/api/scenario")
@@ -155,17 +156,22 @@ def scenario():
     return agent.preview()
 
 
-@app.get("/api/memory")
-def memory():
+def _memory_out(request: Request):
     mem = agent.load_memory()
-    return {**mem, "live_choice": agent.choose_live_strategy(mem)}  # what the next live wave would use, and why
+    return {**(mem if is_coordinator(request) else agent.public_memory(mem)),
+            "live_choice": agent.choose_live_strategy(mem)}  # what the next live wave would use, and why
+
+
+@app.get("/api/memory")
+def memory(request: Request):
+    return _memory_out(request)
 
 
 @app.post("/api/memory/reset")
 def memory_reset(request: Request, who: str = Depends(coordinator)):
     check_rate(request, "reset")
     agent.reset_memory()
-    return agent.load_memory()
+    return _memory_out(request)
 
 
 # ---- live operations ---------------------------------------------------------------------
@@ -203,13 +209,14 @@ async def submit_report(request: Request, text: str = Form(""), source: str = Fo
         coords = (float(lat), float(lng)) if lat and lng else None
     except ValueError:
         coords = None
-    out = await run_in_threadpool(ops.add_report, report, "phone" if source == "phone" else "console", coords)
+    out = await run_in_threadpool(ops.add_report, report, "phone" if source == "phone" else "console", coords,
+                                  client=client_ip(request))
     st, rerouted = out["ops"], []
     if out["confirmed"]:  # a second report confirmed a hazard: trucks heading into it get new routes
         rr = await run_in_threadpool(ops.reroute_affected, out["confirmed"])
         heals += rr["heals"]
         rerouted, st = rr["rerouted"], ops.load()
-    return {"incidents": out["incidents"], "merged": out["merged"], "track": out["track"],
+    return {"incidents": out["incidents"], "merged": [ops.merged_view(i) for i in out["merged"]], "track": out["track"],
             "track_url": f"/track/{out['track']}", "intake": report, "heals": heals,
             "confirmed": out["confirmed"], "unconfirmed": out["hazards"], "rerouted": rerouted,
             **_ops_out(st, request)}
@@ -369,6 +376,7 @@ class StopReq(BaseModel):
     note: str = ""
     lat: float | None = None
     lng: float | None = None
+    route_id: str | None = None  # the route the driver saw when they tapped
 
 
 @app.get("/api/driver/{token}")
@@ -385,9 +393,9 @@ def driver_stop(token: str, n: int, req: StopReq, request: Request):
     if ops.driver_view(token) is None:
         raise HTTPException(404, detail="Unknown driver link.")
     coords = (req.lat, req.lng) if req.lat is not None and req.lng is not None else None
-    out = ops.driver_update(token, n, req.outcome, req.qty, req.note, coords)
+    out = ops.driver_update(token, n, req.outcome, req.qty, req.note, coords, req.route_id)
     rr = ops.reroute_affected([out["hazard"]] if out["hazard"] else [])  # a blocked road reroutes every truck behind it
-    return {"learned": out["learned"], "closed": bool(out["closed"]), "rerouted": rr["rerouted"],
+    return {"learned": out["learned"], "closed": bool(out["closed"]), "late": out["late"], "rerouted": rr["rerouted"],
             **ops.driver_view(token)}
 
 

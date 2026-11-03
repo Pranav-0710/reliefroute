@@ -153,18 +153,21 @@ function notice(text, bad) {
 
 // ---- outbox: updates are saved on the phone first, so weak signal never loses a delivery ------------
 const outbox = () => saved.get(OUTBOX, []);
-const outboxAdd = item => saved.set(OUTBOX, [...outbox().filter(o => o.n !== item.n), item]);
-const outboxDrop = n => saved.set(OUTBOX, outbox().filter(o => o.n !== n));
+const sameStop = (a, b) => a.n === b.n && a.route_id === b.route_id;  // stop numbers repeat on every route
+const outboxAdd = item => saved.set(OUTBOX, [...outbox().filter(o => !sameStop(o, item)), item]);
+const outboxDrop = item => saved.set(OUTBOX, outbox().filter(o => !sameStop(o, item)));
+let retryAt = 0, retryDelay = 0, busy = false;
 
 function setNet() {
   const n = outbox().length + (pending ? 1 : 0), el = $("net");
   el.dataset.tone = sending ? "info" : !online ? "bad" : n ? "warn" : "ok";
   el.textContent = sending ? "Sending…" : !online ? `No signal${n ? ` · ${n} saved` : ""}`
-    : n ? `${n} to send` : lastOk ? `Synced ${new Date(lastOk).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })}` : "Connecting";
+    : busy && n ? `Server busy · ${n} saved` : n ? `${n} to send`
+    : lastOk ? `Synced ${new Date(lastOk).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })}` : "Connecting";
 }
 
 async function flush() {
-  if (sending || !outbox().length) return;
+  if (sending || !outbox().length || Date.now() < retryAt) return;
   sending = true; setNet();
   try {
     for (const item of outbox()) {
@@ -175,16 +178,26 @@ async function flush() {
         out = await r.json().catch(() => ({}));
       } catch { online = false; break; }  // no signal: it stays saved and is retried
       online = true; lastOk = Date.now();
-      outboxDrop(item.n);
+      if (r.status === 429 || r.status >= 500) {  // the server could not take it right now: it stays saved and is retried
+        retryDelay = Math.min(120000, (retryDelay || 8000) * 2);
+        retryAt = Date.now() + Math.max(retryDelay, (+r.headers.get("Retry-After") || 0) * 1000);
+        busy = true;
+        break;
+      }
+      busy = false; retryDelay = 0; retryAt = 0;
+      outboxDrop(item);
       if (r.ok) {
         const next = { truck: out.truck, depot: out.depot, route: out.route, hazards: out.hazards };
         noteReroute(next);
         state = next;
         saved.set(CACHE, state);
-        if (out.closed) finished(item.body.outcome, out.learned);
+        if (out.late) show("warn", `<h2>Stop ${item.n} · ${esc(out.late.zone)}: your report came too late to count</h2>` +
+          `<p>That stop was already taken off your route. The coordinator has your report and will check before sending another truck.</p>`);
+        else if (out.closed) finished(item.body.outcome, out.learned);
         else notice(item.body.outcome === "delivered" ? `Stop ${item.n} recorded` : `Stop ${item.n} reported to the coordinator`);
       } else if (!(r.status === 409 && /already recorded/.test(out.detail || ""))) {  // already recorded = it arrived earlier
-        notice(`Stop ${item.n} not recorded: ${out.detail || "server error " + r.status}`, true);
+        show("bad", `<h2>Stop ${item.n} was not recorded</h2><p>${esc(out.detail || `Server error ${r.status}`)}</p>` +
+          `<p>Tell the coordinator what happened at this stop.</p>`);
       }
     }
   } finally { sending = false; setNet(); if (!open && !pending) render(); }
@@ -217,7 +230,7 @@ function commitNow() {
   if (!pending) return;
   const p = pending;
   pending = null; clearTimeout(undoTimer); $("undo").hidden = true;
-  outboxAdd({ n: p.n, body: p.body });
+  outboxAdd({ n: p.n, route_id: p.body.route_id, body: p.body });
 }
 async function commitPending() {
   if (!pending) return;
@@ -252,7 +265,7 @@ function gps() {
 
 async function act(kind, n, short) {
   const stop = state.route.stops.find(s => s.n === n);
-  const body = { outcome: kind };
+  const body = { outcome: kind, route_id: state.route.id };
   if (short) {
     const v = $(`q${n}`).value.trim();
     if (v === "") { $(`q${n}`).focus(); notice("Enter how many you handed over.", true); return; }
@@ -270,7 +283,8 @@ async function act(kind, n, short) {
 // ---- rendering ------------------------------------------------------------------------------------
 function view() {  // the server's route with this phone's unsent updates applied
   if (!state || !state.route) return state;
-  const local = new Map(outbox().map(o => [o.n, { ...o, how: "saved" }]));  // a stop in its undo window stays open
+  const local = new Map(outbox().filter(o => !o.route_id || o.route_id === state.route.id)  // never paint a saved update onto a newer route
+    .map(o => [o.n, { ...o, how: "saved" }]));  // a stop in its undo window stays open
   return { ...state, route: { ...state.route, stops: state.route.stops.map(s => {
     const l = s.status === "pending" && local.get(s.n);
     return l ? { ...s, status: l.body.outcome, delivered_qty: l.body.qty ?? s.qty, note: l.body.note || "", local: l.how } : s;
