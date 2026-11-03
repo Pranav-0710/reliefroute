@@ -424,6 +424,13 @@ When a rate limit is hit, the response is HTTP 429 with `Retry-After`. MCP gets 
 | `test_switching_the_autopilot_off_stops_a_plan_in_flight` | Off during planning sends no wave and makes no proposal, in both modes; a lease lost to another instance drops the plan |
 | `test_approving_a_proposal_reroutes_around_a_hazard_confirmed_since_it_was_planned` | The wave goes out and is rerouted at once, around the new hazard |
 | `test_no_truck_is_sent_when_the_router_says_no_road_reaches_a_stop` | The stop stays queued with a note and its stock in the depot; other stops still go by road |
+| `test_a_late_delivery_report_holds_the_request_until_a_coordinator_settles_it` | Manual waves and the autopilot leave it out, others still go; accepting moves the units from stock to delivered with the total unchanged; settling twice is refused |
+| `test_rejecting_a_late_report_sends_a_truck_and_changes_no_stock` | The request is dispatchable again with its full quantity |
+| `test_a_partial_late_delivery_leaves_the_rest_waiting_and_a_failed_one_holds_nothing` | A short delivery leaves the rest to send; a late failure sets no hold |
+| `test_settling_a_cut_off_stop_on_a_route_still_out_keeps_the_units_right` | Accepting a report on a route still out keeps the total unchanged, and closing the route does not return those units |
+| `test_approving_an_older_proposal_does_not_send_a_truck_to_a_request_now_on_hold` | The re-check at dispatch respects a hold set after planning |
+| `test_no_wave_goes_to_a_place_nobody_named_until_a_coordinator_sets_it` | A manual wave leaves it out and says so; a place outside Chennai is refused; a set place dispatches, named or from the nearest area |
+| `test_settling_and_placing_need_a_coordinator` | Both actions return 401 for the public, and settling twice returns 409 |
 
 ## 12. Live operations
 
@@ -475,7 +482,7 @@ sequenceDiagram
 An incident's status follows from its quantities: `waiting` while some of it still has to be sent (`qty > 0`), `en_route` while the rest is on trucks, `delivered` when both are zero, `closed` when a coordinator closed it.
 
 **A wave**
-1. It takes every waiting incident, the trucks that are `idle` (with their own capacities) and the depots' current stock.
+1. It takes every incident ready to send (`ops.ready_to_send`: waiting, with a known place and not on hold), the trucks that are `idle` (with their own capacities) and the depots' current stock. What it leaves out is reported in the log.
 2. It asks the road router for a distance table between all of those points, with every confirmed hazard as an area to avoid. While planning, `env.road_distances` installs that table, so the simulator, the rule strategies and the learned policy all see road kilometres. A pair the router connected is never treated as crossing a hazard, because its road route already goes around it.
 3. It plans one round with the strategy from `agent.choose_live_strategy` inside a simulator episode that contains only these incidents, depots and trucks. For every strategy except `fifo`, the expected score is `(n_field × field_mean + 3 × sim_mean) / (n_field + 3)`, where field data counts once a strategy has two closed routes; without field data it is the simulator mean. The simulator mean here is `trusted_bandit`, which only coordinator-run training writes; the public Simulator has its own `bandit`, `lessons` and `episodes`, so anonymous runs cannot steer live dispatch. The highest wins; there is no exploration in live operations. The wave stores the expected scores and a one-line reason. An LLM plan reads only `field.lessons`: lessons from real routes and from rejected proposals. If the router says no road reaches a stop, no truck goes there: it stays queued with a note. A proposal approved later is checked in step 5: any hazard confirmed since it was planned triggers rerouting as soon as the wave is out.
 4. For each truck with stops, it asks the router for the road route through the stops in order. That gives the geometry the driver sees and the drive time of every leg.
@@ -500,7 +507,9 @@ If the router fails or the wave has more than 40 points, planning and routes use
 
 Every update carries the phone's GPS position when the driver allows it; it becomes the route's `last_pos`.
 
-The driver page saves each update in a local outbox before sending it. It is removed only on success or a definite answer: a 429 or 5xx keeps it and retries with growing delays, and any other refusal is shown as a card that stays on screen. Updates carry `route_id`, because stop numbers repeat on every route. A stop the server already gave up on (`skipped`, `unreachable`) turns an update into a late report on that route (`late_reports`): stock and queue stay as they are, and the log, the incident's note and a console alert tell the coordinator to check before sending another truck.
+The driver page saves each update in a local outbox before sending it. It is removed only on success or a definite answer: a 429 or 5xx keeps it and retries with growing delays, and any other refusal is shown as a card that stays on screen. Updates carry `route_id`, because stop numbers repeat on every route. A stop the server already gave up on (`skipped`, `unreachable`) turns an update into a late report on that route (`late_reports`): stock and queue stay as they are, and the log, the incident's note and a console alert tell the coordinator.
+
+A late report of a delivery also sets the incident's `hold`, and `ops.ready_to_send` then keeps it out of every wave, including an older proposal approved later. `settle_late_report` ends the hold. Delivered: the units (up to what is still unassigned) move to `delivered`, and leave stock if the route has closed, or count as handed over if it is still out, so its close does not return them. Not delivered: the request is ready to dispatch again.
 
 When the last stop is recorded the route closes:
 - Unused cargo returns to the depot's stock.
@@ -528,7 +537,7 @@ When a wave is due, it claims a 90-second lease with a conditional write (the sa
 
 Ticks come from the coordinator console every 15 seconds while it is open, or from any scheduler that calls `POST /api/agent/tick` with `X-Agent-Secret`. Serverless instances do not run background work, so nothing is planned while neither is calling.
 
-**Intake safety.** Gemini receives the intake instructions as a system instruction and the report wrapped in `<report>` tags (any closing tag inside the report is removed), and is told the report is data to extract from. One report adds at most 6 needs and 3 hazards. A hazard from a report starts unconfirmed (`verified: false`): it is shown on maps and to drivers, but routes avoid it only after a second source confirms it: a report within 1 km from a different client (compared by a salted hash of the address, kept in `reporters`), a driver's report or a coordinator. Hazards in the same report cannot confirm each other. A need whose place could not be read is placed at the city centre with `located_by: guess`; it is not drawn on the map, never merged with another, and never dispatched by the autopilot. Uploads must be image or audio files of at most 4 MB; every Gemini call has a 25-second timeout.
+**Intake safety.** Gemini receives the intake instructions as a system instruction and the report wrapped in `<report>` tags (any closing tag inside the report is removed), and is told the report is data to extract from. One report adds at most 6 needs and 3 hazards. A hazard from a report starts unconfirmed (`verified: false`): it is shown on maps and to drivers, but routes avoid it only after a second source confirms it: a report within 1 km from a different client (compared by a salted hash of the address, kept in `reporters`), a driver's report or a coordinator. Hazards in the same report cannot confirm each other. A need whose place could not be read is placed at the city centre with `located_by: guess`; it is not drawn on the map, never merged with another, and in no wave until a coordinator sets its place (`ops.place_incident`, `located_by: coordinator`). Uploads must be image or audio files of at most 4 MB; every Gemini call has a 25-second timeout.
 
 **The public view.** `ops.view` serves non-coordinators the operation without driver links, without reporters' summaries and evidence or any driver or coordinator notes, with incident, stop and route positions rounded to 3 decimals (about 100 m), without truck positions, and with coordinators' email addresses replaced by "coordinator".
 

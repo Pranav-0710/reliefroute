@@ -129,6 +129,7 @@
   .inc-l2 .hi { color:var(--signal); }
   .inc-l3 { font-size:12px; color:var(--muted); margin-top:2px; }
   .inc .closebtn { margin-top:6px; }
+  .incacts { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
   details.donegroup > summary { cursor:pointer; font:500 12px var(--sans); color:var(--muted); margin:14px 0 4px; min-height:var(--tap); display:flex; align-items:center; }
   .empty-state { color:var(--muted); font-size:13px; }
   .empty-state b { color:var(--text); }
@@ -676,6 +677,7 @@ function healTag(h) {
   if (/quota|attempt \d failed/.test(h)) return ["FAILOVER", "heal"];
   if (/Guardrail|Planner skipped/.test(h)) return ["GUARDRAIL", "heal"];
   if (/blocked by/.test(h)) return ["REROUTE", "heal"];
+  if (/left out of this wave|No road reaches/.test(h)) return ["NOT SENT", "heal"];
   return ["FALLBACK", "heal"];
 }
 function setAI(level, text) {  // only escalates within a session: a tripped breaker stays visible
@@ -907,7 +909,7 @@ async function initAuth() {
 
 // ---- live operations ------------------------------------------------------------------------------
 const ITEMS = ["water", "food", "medicine", "blankets"];
-let ops = null, opsSummary = null, opsBusy = false, opsSeen = null, stopSeen = null, routeSeen = null, picking = false, picked = null;
+let ops = null, opsSummary = null, opsBusy = false, opsSeen = null, stopSeen = null, routeSeen = null, picking = false, picked = null, placing = null;
 const mins = ts => Math.max(0, Math.round((Date.now() / 1000 - ts) / 60));
 const hhmm = ts => new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
 const etaOf = (r, s) => s.eta_at || r.created_at + s.eta_min * 60;  // reroutes move eta_at
@@ -929,12 +931,17 @@ function incLine(i) {
     : i.status === "en_route" ? `<span class="ist road">on the road</span>` : i.status === "delivered" ? `<span class="ist done">delivered</span>` : `<span class="ist">closed</span>`;
   const detail = i.status === "waiting" && i.assigned ? `${i.assigned} already on a truck` : i.status === "delivered" ? `${i.delivered} delivered` : "";
   const extra = [detail, i.source === "phone" ? `phone${i.located_by === "gps" ? ", GPS" : ""}` : "", i.note].filter(Boolean).map(esc).join(" · ") +
-    (i.located_by === "guess" && i.status === "waiting" ? ` <span class="hz-un">· not on the map, autopilot skips it</span>` : "");
+    (i.located_by === "guess" && i.status === "waiting" ? ` <span class="hz-un">· no truck goes until it has a place</span>` : "");
+  const needsPlace = i.located_by === "guess" && i.status === "waiting";
   const canClose = me.coordinator && i.status === "waiting" && !i.assigned;
+  const hold = i.hold ? `<div class="inc-l3 hz-un">On hold: ${esc(i.hold.truck)} says it delivered ${i.hold.qty} ${esc(i.item)}. No truck goes until this is checked.</div>` +
+    (me.coordinator ? `<div class="incacts"><button class="btn sm" data-settle="${esc(i.id)}" data-delivered="1">It was delivered</button>` +
+      `<button class="btn sm" data-settle="${esc(i.id)}" data-delivered="0">Send a truck</button></div>` : "") : "";
   return `<div class="inc" data-status="${i.status}" style="--u:${i.urgency}"><div class="urgbar" aria-hidden="true"></div><div>` +
     `<div class="inc-l1"><b>${esc(i.zone)}</b>${state}</div>` +
     `<div class="inc-l2"><span class="num">${amount}</span> ${esc(i.item)} · <span class="${i.urgency >= 4 ? "hi" : ""}">urgency ${i.urgency}/5</span>${i.reports > 1 ? ` · ${i.reports} reports` : ""}</div>` +
-    (extra ? `<div class="inc-l3">${extra}</div>` : "") +
+    (extra ? `<div class="inc-l3">${extra}</div>` : "") + hold +
+    (me.coordinator && needsPlace ? `<button class="btn sm closebtn" data-place="${esc(i.id)}" aria-label="Set the place of request ${esc(i.id)}">Set place on map</button> ` : "") +
     (canClose ? `<button class="btn sm closebtn" data-close="${esc(i.id)}" aria-label="Close request ${esc(i.id)} in ${esc(i.zone)}">Close request</button>` : "") + `</div></div>`;
 }
 
@@ -951,10 +958,13 @@ function renderOps(st, s) {
   const num = (v, l, signal) => `<div class="sn ${signal ? "signal" : ""}"><b>${v}</b><span>${l}</span></div>`;
   $("sitNums").innerHTML = num(s.waiting, "Waiting", s.waiting > 0) + num(s.en_route, "On the road") +
     num(s.units_delivered, "Units delivered") + num(s.longest_wait_min, "Longest wait, min", s.longest_wait_min >= 30);
+  const parked = st.incidents.filter(i => i.qty > 0 && !i.closed && (i.hold || i.located_by === "guess")).length;
+  const ready = s.waiting - parked;
   $("waveWhy").textContent = !s.waiting ? "Nothing waiting to dispatch."
+    : !ready ? `${parked} request${parked === 1 ? "" : "s"} need${parked === 1 ? "s" : ""} a place set or a late report checked.`
     : !s.trucks_free ? "No free truck. Recall a route or add a truck."
-    : `${s.waiting} request${s.waiting === 1 ? "" : "s"} waiting · ${s.trucks_free} of ${s.trucks_free + s.trucks_out} trucks free`;
-  $("waveWhy").className = s.waiting && s.trucks_free ? "go" : "";
+    : `${ready} request${ready === 1 ? "" : "s"} ready${parked ? `, ${parked} need${parked === 1 ? "s" : ""} you first` : ""} · ${s.trucks_free} of ${s.trucks_free + s.trucks_out} trucks free`;
+  $("waveWhy").className = ready && s.trucks_free ? "go" : "";
   renderAutopilot(st);
   const rank = { waiting: 0, en_route: 1, delivered: 2, closed: 3 };
   const list = [...st.incidents].sort((a, b) => rank[a.status] - rank[b.status] ||
@@ -1175,8 +1185,9 @@ function noteChanges(st) {
     const lateBefore = lateSeen.get(r.id);
     if (lateBefore !== undefined) for (const x of (r.late_reports || []).slice(lateBefore)) {
       const what = x.outcome === "delivered" ? `delivered ${x.qty} ${esc(x.item)}` : esc(x.outcome);
-      ev("LATE", "bad", `${esc(r.truck_id)} says it ${what} at ${esc(x.zone)} after ${esc(r.id)} gave up on that stop. Check before sending another truck.`);
-      toast(`${r.truck_id} reported ${x.outcome} at ${x.zone} after its route gave up on that stop. Check before dispatching it again.`, { tone: "bad", ms: 12000 });
+      ev("LATE", "bad", `${esc(r.truck_id)} says it ${what} at ${esc(x.zone)} after ${esc(r.id)} gave up on that stop.` +
+        (x.outcome === "delivered" && x.qty ? " The request is on hold until you check it under Incidents." : ""));
+      toast(`${r.truck_id} reported ${x.outcome} at ${x.zone} after its route gave up on that stop. Check it under Incidents.`, { tone: "bad", ms: 12000 });
     }
   }
   if (routeSeen) for (const r of st.routes) if (r.status === "done" && routeSeen.get(r.id) === "active") {
@@ -1369,11 +1380,20 @@ $("pick").onclick = () => {
   $("mapwrap").scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "center" });
 };
 $("map").addEventListener("click", e => {
-  if (!picking) return;
+  if (!picking && !placing) return;
   const b = $("map").getBoundingClientRect();
   const x = (e.clientX - b.left) / b.width * W, y = (e.clientY - b.top) / b.height * H;
-  picked = { lat: B.latMax - y / H * (B.latMax - B.latMin), lng: B.lngMin + x / W * (B.lngMax - B.lngMin) };
-  picking = false; $("mapwrap").classList.remove("picking");
+  const here = { lat: B.latMax - y / H * (B.latMax - B.latMin), lng: B.lngMin + x / W * (B.lngMax - B.lngMin) };
+  $("mapwrap").classList.remove("picking");
+  if (placing) {  // a request with no known place gets one
+    const id = placing;
+    placing = null;
+    const zone = prompt("Name of this area (leave empty to use the nearest known one):", "");
+    if (zone !== null) admin(() => postJSON(`/api/ops/incidents/${id}/place`, { ...here, zone }), "Place set. The request can now be dispatched.");
+    return;
+  }
+  picked = here;
+  picking = false;
   $("addDepot").disabled = false;
   $("pickHint").textContent = `Location ${picked.lat.toFixed(4)}, ${picked.lng.toFixed(4)}. Name it and open the depot.`;
   drawOpsMap();
@@ -1387,9 +1407,22 @@ $("addDepot").onclick = async () => {
 };
 
 document.addEventListener("click", async e => {
-  const b = e.target.closest("[data-copy],[data-recall],[data-service],[data-clear],[data-close],[data-confirm],[data-approve],[data-reject]");
+  const b = e.target.closest("[data-copy],[data-recall],[data-service],[data-clear],[data-close],[data-confirm],[data-approve],[data-reject],[data-settle],[data-place]");
   if (!b) return;
   const d = b.dataset;
+  if (d.place) {
+    placing = d.place; picking = false; $("mapwrap").classList.add("picking");
+    toast("Click the map where this request is.");
+    $("mapwrap").scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "center" });
+    return;
+  }
+  if (d.settle) {
+    const yes = d.delivered === "1";
+    if (confirm(yes ? "Count this as delivered? The units leave depot stock and the request closes for that amount."
+      : "Treat the late report as wrong? The request goes back to waiting for a truck."))
+      admin(() => postJSON(`/api/ops/incidents/${d.settle}/late-report`, { delivered: yes }), yes ? "Counted as delivered." : "Back in the queue for a truck.");
+    return;
+  }
   if (d.approve) {
     b.disabled = true; pipeBusy();
     try {

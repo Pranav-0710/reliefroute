@@ -318,6 +318,26 @@ def close_incident(incident_id: str, req: ReasonReq, request: Request, who: str 
     return _admin(request, who, ops.close_incident, incident_id, req.reason)
 
 
+class PlaceReq(BaseModel):
+    lat: float
+    lng: float
+    zone: str = ""
+
+
+class SettleReq(BaseModel):
+    delivered: bool
+
+
+@app.post("/api/ops/incidents/{incident_id}/place")
+def place_incident(incident_id: str, req: PlaceReq, request: Request, who: str = Depends(coordinator)):
+    return _admin(request, who, ops.place_incident, incident_id, req.lat, req.lng, req.zone)
+
+
+@app.post("/api/ops/incidents/{incident_id}/late-report")
+def settle_late_report(incident_id: str, req: SettleReq, request: Request, who: str = Depends(coordinator)):
+    return _admin(request, who, ops.settle_late_report, incident_id, req.delivered)
+
+
 @app.post("/api/ops/routes/{route_id}/recall")
 def recall_route(route_id: str, request: Request, who: str = Depends(coordinator)):
     check_rate(request, "admin")

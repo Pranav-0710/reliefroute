@@ -27,7 +27,7 @@ import time
 import agent
 import roads
 import store
-from env import DEPOTS, ITEMS, TRUCK_CAPACITY, TRUCKS_PER_DEPOT, ReliefEnv, _segment_hits, _xy, road_distances
+from env import DEPOTS, ITEMS, TRUCK_CAPACITY, TRUCKS_PER_DEPOT, ZONES, ReliefEnv, _segment_hits, _xy, road_distances
 
 SCHEMA = 2
 OPS_STOCK = 400  # units of each item per depot when an operation starts
@@ -287,17 +287,25 @@ def track_view(token):
 
 
 # ---- dispatch waves --------------------------------------------------------------------------
-def plan_wave(st, heals, skip_unlocated=False):
-    """Plan one wave over the waiting incidents with the idle trucks. Writes nothing: commit_wave sends
-    the trucks out, now (a coordinator's wave) or later (an autopilot proposal someone approves).
-    skip_unlocated leaves out requests with no known place (the autopilot never guesses an address)."""
-    waiting = [i for i in st["incidents"] if i["qty"] > 0 and not i["closed"]
-               and not (skip_unlocated and i["located_by"] == "guess")]
+def ready_to_send(inc):
+    """No truck goes to a request with no known place, or one a driver may already have served (a late
+    report on hold): a coordinator settles those first."""
+    return inc["qty"] > 0 and not inc["closed"] and inc["located_by"] != "guess" and not inc.get("hold")
+
+
+def plan_wave(st, heals):
+    """Plan one wave over the incidents ready to send with the idle trucks. Writes nothing: commit_wave sends
+    the trucks out, now (a coordinator's wave) or later (an autopilot proposal someone approves)."""
+    waiting = [i for i in st["incidents"] if ready_to_send(i)]
+    parked = sum(i["qty"] > 0 and not i["closed"] for i in st["incidents"]) - len(waiting)
     idle = [t for t in st["trucks"] if t["status"] == "idle"]
     if not waiting:
-        raise OpsError("No waiting incidents to dispatch.")
+        raise OpsError(f"{parked} waiting request(s) need you first: set the place, or check the late report."
+                       if parked else "No waiting incidents to dispatch.")
     if not idle:
         raise OpsError("Every truck is out on a route. Wait for a driver to finish, recall a route, or add a truck.")
+    if parked:
+        heals.append(f"{parked} request(s) left out of this wave: they need a place set or a late report checked")
     hazards = _routing_hazards(st)
     depots = [{**d, "trucks": [t["id"] for t in idle if t["depot_id"] == d["id"]],
                "capacity": {t["id"]: t["capacity"] for t in idle if t["depot_id"] == d["id"]}} for d in st["depots"]]
@@ -380,7 +388,7 @@ def commit_wave(planned, actor, heals, hook=None):
             kept = []
             for s in p["stops"]:
                 inc = live.get(s["incident_id"])
-                q = min(s["qty"], inc["qty"] if inc and not inc["closed"] else 0, stock.get(s["item"], 0))
+                q = min(s["qty"], inc["qty"] if inc and ready_to_send(inc) else 0, stock.get(s["item"], 0))
                 if q <= 0:
                     continue
                 stock[s["item"]] -= q
@@ -503,8 +511,9 @@ def driver_view(token):
 
 def _late_report(st, route, stop, truck, outcome, qty, note):
     """A driver's report about a stop the server already gave up on (route recalled, stop cut off), sent while
-    the phone had no signal. Its cargo is back in stock and its request back in the queue, so nothing is
-    changed by itself: the coordinator is told, and checks before sending another truck."""
+    the phone had no signal. Its cargo is back in stock and its request back in the queue, so stock and
+    quantities stay as they are. A reported delivery puts the request on hold, so no truck goes to people
+    who may already be served, until a coordinator settles it (settle_late_report)."""
     late = route.setdefault("late_reports", [])
     entry = next((x for x in late if x["n"] == stop["n"]), None)
     if entry:  # the phone repeating itself
@@ -517,8 +526,62 @@ def _late_report(st, route, stop, truck, outcome, qty, note):
     inc = _find(st["incidents"], "id", stop["incident_id"])
     if inc and not inc["closed"]:
         inc["note"] = f"{truck['id']} reported {what} after {route['id']} gave up on this stop: check before sending another truck"
+        if dq:
+            inc["hold"] = {"route": route["id"], "n": stop["n"], "truck": truck["id"], "qty": dq, "at": entry["at"]}
     _log(st, f"driver {truck['id']}", f"Late report for {route['id']} stop {stop['n']} ({stop['zone']}): {what}")
     return entry
+
+
+def settle_late_report(incident_id, delivered, actor="console"):
+    """A coordinator decides about a request on hold. delivered: the driver's report is right, so the units
+    count as delivered and leave stock. Otherwise the request goes back to waiting for a truck. Units
+    already out on another truck are not touched: recall that route if it is no longer needed."""
+    def upd(st):
+        inc = _find(st["incidents"], "id", incident_id)
+        hold = inc.get("hold") if inc else None
+        if not hold:
+            raise OpsError(f"{incident_id} has no late report to check.")
+        inc["hold"] = None
+        route = _find(st["routes"], "id", hold["route"])
+        stop = next(s for s in route["stops"] if s["n"] == hold["n"])
+        next(x for x in route["late_reports"] if x["n"] == hold["n"])["settled"] = "delivered" if delivered else "not delivered"
+        if not delivered:
+            inc["note"] = f"{hold['truck']}'s late report not accepted; waiting for a truck"
+            _dirty(st, f"{incident_id} is ready to send again")
+            _log(st, actor, f"Late report for {incident_id} not accepted: back in the queue")
+            return inc
+        credit = min(hold["qty"], inc["qty"])
+        inc["qty"] -= credit
+        inc["delivered"] += credit
+        stop["delivered_qty"] += credit
+        if route["status"] != "active":  # closing the route put this cargo back in stock; a route still out has not yet
+            stock = _find(st["depots"], "id", route["depot_id"])["stock"]
+            stock[stop["item"]] = max(0, stock.get(stop["item"], 0) - credit)
+        if inc["qty"] == 0 and inc["assigned"] == 0 and not inc["delivered_at"]:
+            inc["delivered_at"] = _now()
+        _set_status(inc)
+        inc["note"] = f"{credit} delivered by {hold['truck']} (late report accepted)"
+        _log(st, actor, f"Late report for {incident_id} accepted: {credit} {stop['item']} delivered by {hold['truck']}")
+        return inc
+    return _update(upd)
+
+
+def place_incident(incident_id, lat, lng, zone="", actor="console"):
+    """A coordinator gives a request with no known place its location, so it can be dispatched."""
+    zone = str(zone or "").strip()[:60]
+    if not _in_chennai(lat, lng):
+        raise OpsError("That place is outside the Chennai operation area.")
+
+    def upd(st):
+        inc = _find(st["incidents"], "id", incident_id)
+        if not inc or inc["located_by"] != "guess" or inc["closed"]:
+            raise OpsError(f"{incident_id} is not waiting for a place.")
+        area = zone or min(ZONES, key=lambda z: _km((lat, lng), (z[1], z[2])))[0]
+        inc.update(lat=lat, lng=lng, zone=area, located_by="coordinator", note="")
+        _dirty(st, f"{incident_id} now has a place: {area}")
+        _log(st, actor, f"Set the place of {incident_id}: {area}")
+        return inc
+    return _update(upd)
 
 
 def driver_update(token, stop_n, outcome, qty=None, note="", coords=None, route_id=None):
@@ -874,7 +937,7 @@ def close_incident(incident_id, reason="", actor="console"):
             raise OpsError(f"{incident_id} is not open.")
         if inc["assigned"]:
             raise OpsError(f"{incident_id} is on a truck; record or recall that route first.")
-        inc.update(closed=True, qty=0, note=f"closed: {reason or 'by coordinator'}")
+        inc.update(closed=True, qty=0, hold=None, note=f"closed: {reason or 'by coordinator'}")
         _set_status(inc)
         _log(st, actor, f"Closed {incident_id}: {reason or 'no reason given'}")
         return inc

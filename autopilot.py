@@ -8,7 +8,7 @@
 When does it plan? An urgent request it has not planned for yet arrives, a request has waited longer
 than max_wait_min, or something changed in the field (a truck came back, a stop failed, a road was cut;
 ops sets autopilot.dirty). Never while a proposal is waiting, never twice within COOLDOWN_S, and never
-for a request whose place is unknown.
+for a request that is not ready to send (ops.ready_to_send).
 
 Ticks come from the coordinator console while it is open, and optionally from an external scheduler
 calling POST /api/agent/tick with AGENT_TICK_SECRET. Servers are stateless, so a lease in the operation
@@ -29,7 +29,7 @@ AGENT = "agent (autopilot)"
 
 
 def _eligible(st):
-    return [i for i in st["incidents"] if i["qty"] > 0 and not i["closed"] and i["located_by"] != "guess"]
+    return [i for i in st["incidents"] if ops.ready_to_send(i)]
 
 
 def _pending(st, now):
@@ -49,7 +49,7 @@ def should_plan(st, now):
         return False, "planned less than 2 minutes ago"
     waiting = _eligible(st)
     if not waiting:
-        return False, "no request with a known place is waiting"
+        return False, "no request is ready to send"
     if not any(t["status"] == "idle" for t in st["trucks"]):
         return False, "every truck is out"
     if ap["dirty"]:
@@ -120,7 +120,7 @@ def tick(now=None):
 
     heals = []
     try:
-        planned = ops.plan_wave(ops.load(), heals, skip_unlocated=True)
+        planned = ops.plan_wave(ops.load(), heals)
     except Exception as e:
         ops._update(lambda st: _drop_lease(st, lease))
         if isinstance(e, ops.OpsError):

@@ -148,7 +148,7 @@ flowchart LR
   - A phone's GPS position, when inside Chennai, replaces the coordinates guessed from the text.
   - A need is merged into an open request when the item is the same, the place is the same and it was reported in the last 12 hours. "Same place" means within 0.5 km when both positions are GPS. When a position was guessed from a place name, which is only precise to the locality, the same locality (or within 1.5 km) is enough. The larger quantity and the higher urgency win, so two people describing one camp never send two trucks.
   - Every report gets a tracking link that shows the reporter only their own requests.
-  - The report text reaches Gemini as data, separate from the instructions, so a report cannot rewrite them. One report adds at most 6 needs and 3 hazards. A request that names no known place is listed as "location unknown": it is not drawn on the map, not merged, and the autopilot never dispatches it.
+  - The report text reaches Gemini as data, separate from the instructions, so a report cannot rewrite them. One report adds at most 6 needs and 3 hazards. A request that names no known place is listed as "location unknown": it is not drawn on the map, not merged, and no wave includes it until a coordinator uses **Set place on map**.
   - A hazard from a single report starts **unconfirmed**: it is shown, but routes do not avoid it until a second source confirms it: a report from a different client address (within 1 km; addresses are kept only as salted hashes), a driver or a coordinator. One false report, or one phone repeating it, cannot wall off part of the city.
 - **A wave** plans over every waiting incident, using only the trucks that are free, their own capacities and the depots' current stock.
   - **The strategy is chosen by field results.** Each strategy's expected score is its field mean (what drivers delivered on its routes) shrunk towards its score in coordinator-run training: `(n_field × field + 3 × sim) / (n_field + 3)`, counting field data once a strategy has two closed routes. Training decides until real routes exist, and real outcomes take over as they come in. Anonymous Simulator runs have their own scores and lessons and cannot change live dispatch. The wave records the scores and a one-line reason, shown in the log and in the **Learning** tab.
@@ -162,7 +162,7 @@ flowchart LR
 
   When the last stop is recorded, the route closes. Undelivered relief goes back into the queue and unused cargo back into stock. Every update carries the phone's GPS position, so the server knows where the truck is.
 
-  Updates are saved on the phone first and stay saved through no signal, rate limits and server errors, with retries. Each one names the route it belongs to, so an update that arrives late can never land on the truck's next route. If the server already gave up on that stop (route recalled, stop cut off), the update becomes a **late report**: nothing changes by itself, and the coordinator is told to check before sending another truck.
+  Updates are saved on the phone first and stay saved through no signal, rate limits and server errors, with retries. Each one names the route it belongs to, so an update that arrives late can never land on the truck's next route. If the server already gave up on that stop (route recalled, stop cut off), the update becomes a **late report**, and the coordinator is told. A reported delivery puts the request **on hold**, so no truck goes to people who may already be served. The coordinator then chooses **It was delivered** (the units count as delivered and leave stock) or **Send a truck** (the request is ready to dispatch again).
 - **Live rerouting.** When a road is cut (a driver reports it blocked, or a reported hazard is confirmed), every truck on the road whose remaining route passes through it gets a new road route around it, starting from its last known position. A stop no road reaches any more is marked cut off: its request goes back to the queue and its cargo stays on the truck until the route closes. If the router cannot answer, the route is kept and the driver is warned instead. The driver's page vibrates and shows **Route changed** with the extra distance; ETAs move with the new route, on the tracking page too.
 - **Autopilot.** Off by default. In **Propose** mode the agent decides when a wave is worth sending: an urgent request (urgency 4 or more) it has not planned for yet, a request that has waited 30 minutes, or a change in the field (a truck came back, a stop failed, a road was cut). It plans the wave, shows it as a proposal (routes on the map, why now, why this strategy) and waits; a coordinator approves or rejects it, and a rejection's reason becomes a lesson. A proposal expires after 10 minutes, because trucks and requests move on. **Auto** mode sends waves itself and is only available after a coordinator has approved one proposal. The agent never plans twice within 2 minutes or while a proposal is waiting. It runs on a tick: the coordinator console sends one every 15 seconds while it is open, and any scheduler can call `POST /api/agent/tick` with the `X-Agent-Secret` header set to `AGENT_TICK_SECRET`. A lease in the operation document stops two server instances from planning at once.
 - **The feedback loop** turns every closed route into learning:
@@ -374,7 +374,7 @@ Open http://localhost:8080.
 pytest -q
 ```
 
-The 50 tests run without network access or an API key. Gemini, the road router and Firebase sign-in are replaced by fakes. The OpenEnv test is skipped if the `openenv` package isn't installed. They cover:
+The 57 tests run without network access or an API key. Gemini, the road router and Firebase sign-in are replaced by fakes. The OpenEnv test is skipped if the `openenv` package isn't installed. They cover:
 - the simulator contract and truck rules: capacity, stop order, arrival times, a full fleet
 - recovery after a blocked route
 - guardrail repair
@@ -409,6 +409,8 @@ The 50 tests run without network access or an API key. Gemini, the road router a
   - anonymous Simulator runs leaving the live strategy and lessons unchanged, and a coordinator's training counting
   - approving a proposal rerouting around a hazard confirmed since it was planned
   - no truck sent to a stop the router says no road reaches
+  - a late delivery holding its request, settling it either way, and every unit still accounted for, on a closed route and on one still out
+  - no wave including a request with no known place until a coordinator sets it
 - the full web flow
 
 ## Use it from another agent (MCP)
@@ -480,6 +482,8 @@ reliefroute = McpToolset(connection_params=StreamableHTTPConnectionParams(url="h
 | `POST` | `/api/proposals/{id}/approve` | Sends out a proposal's trucks, re-checked against the current state (coordinator). 409 once expired or already decided. |
 | `POST` | `/api/proposals/{id}/reject` | JSON `{"reason"}`: turns a proposal down; the reason becomes a lesson (coordinator) |
 | `POST` | `/api/ops/incidents/{id}/close` | JSON `{"reason"}`: closes a request that needs no delivery (coordinator) |
+| `POST` | `/api/ops/incidents/{id}/place` | JSON `{"lat", "lng", "zone"}`: gives a request with no known place its location; an empty `zone` uses the nearest known area (coordinator) |
+| `POST` | `/api/ops/incidents/{id}/late-report` | JSON `{"delivered": true \| false}`: settles a request on hold (coordinator) |
 | `GET` | `/driver/{token}`, `/api/driver/{token}` | Driver page and the truck's current route |
 | `POST` | `/api/driver/{token}/stops/{n}` | JSON `{"outcome": "delivered" \| "failed" \| "blocked", "qty", "note", "lat", "lng", "route_id"}`. A blocked road reroutes other trucks; the response lists them. `late` is set when the server had already given up on that stop. |
 | `GET` | `/track/{token}`, `/api/track/{token}` | Reporter's status page and data |
@@ -558,7 +562,7 @@ gcloud run deploy reliefroute --source . --region asia-south1 --allow-unauthenti
 - **Road routing uses a public server.** Live routes come from the public FOSSGIS Valhalla instance on OpenStreetMap data. It is free, has no service guarantee, and asks for fair use; a real deployment should run its own Valhalla (`ROUTER_URL`). Drive times assume normal roads, so the learned ETA correction is what adapts them to flood conditions. When the router is unreachable, the agent plans on straight-line estimates and says so. The Google Maps Routes API is not used for live routes: it needs a Google Cloud project with billing, and ours is closed.
 - **Hazards are circles.** A reported flood or a driver's blocked road is an area of fixed radius (0.8 km for reports, 0.5 km from drivers), not the exact flooded segment. A hazard that covers a stop itself cannot be avoided and is not sent to the router; the driver is warned instead.
 - **A "second source" is a different address.** Two people on the same network (a camp's Wi-Fi, a carrier's shared address) count as one, so a coordinator has to confirm; someone switching networks counts as two. On a host that does not set `X-Forwarded-For` itself, the header could be forged.
-- **A late report needs a person.** If a driver really delivered after a recall, the request stays in the queue until a coordinator acts on the late report; the autopilot may plan for it meanwhile.
+- **A late report needs a person.** A request on hold waits for a coordinator, however urgent it is. If a second truck was already out when the report arrived, that truck keeps going until a coordinator recalls it. Requests with no known place also wait for a coordinator: the reporter is not asked for the place.
 - **The autopilot needs a tick.** Serverless functions do not run in the background, so the autopilot plans only when something calls it: the coordinator console every 15 seconds while it is open, or a scheduler with `AGENT_TICK_SECRET`. With neither, nothing is planned by itself. Rerouting does not depend on it: it runs as part of the driver's or reporter's request.
 - **Truck positions come from drivers' taps.** There is no live GPS tracking: rerouting starts from the position sent with the driver's last update, or the last stop, or the depot. At most 5 trucks are rerouted per new hazard; the rest see it on their map.
 - **Gemini quota is limited.** The deployment uses the Gemini free tier, which allows few requests per day. When a model is exhausted, the circuit breaker moves to the next one. If every model is exhausted, the agent continues on rule-based intake and planning, which only understands English keywords and known area names.

@@ -883,7 +883,7 @@ def test_autopilot_auto_mode_dispatches_and_skips_unlocated_requests(monkeypatch
     autopilot.configure("auto")
     ops.add_report({"summary": "t", "hazards": [],
                     "needs": [agent._clean_need({"zone": "somewhere", "item": "food", "qty": 20, "urgency": 5})]})
-    assert autopilot.tick()["why"] == "no request with a known place is waiting"
+    assert autopilot.tick()["why"] == "no request is ready to send"
     ops.add_report({"summary": "t", "hazards": [], "needs": [_need("Adyar", "food", 60, 5)]})
     ops._update(lambda st: st["autopilot"].update(lease_until=clock[0] + 60))
     assert autopilot.tick()["why"] == "another server is planning"  # the lease keeps two servers from planning at once
@@ -1199,3 +1199,174 @@ def test_no_truck_is_sent_when_the_router_says_no_road_reaches_a_stop(monkeypatc
     i1 = ops._find(st["incidents"], "id", "I1")
     assert i1["status"] == "waiting" and i1["qty"] == 60 and i1["assigned"] == 0 and "no road route" in i1["note"]
     assert sum(d["stock"]["food"] for d in st["depots"]) == sum(v["food"] for v in stock.values())
+
+
+# ---- requests a coordinator has to settle before a truck goes ---------------------------------------
+def _totals(st):
+    """Units of an item in depots, still on active routes, and delivered: this must never change."""
+    stock = {}
+    for d in st["depots"]:
+        for k, v in d["stock"].items():
+            stock[k] = stock.get(k, 0) + v
+    for r in st["routes"]:
+        for s in r["stops"]:
+            stock[s["item"]] += s["qty"] if r["status"] == "active" else s["delivered_qty"]  # on the truck or handed over
+    return stock
+
+
+def _recalled_with_late_delivery(qty=None):
+    """Adyar's truck is recalled while its driver, offline, hands over the food."""
+    import ops
+
+    ops.add_report({"summary": "t", "hazards": [], "needs": [_need("Adyar", "food", 60, 5)]})
+    route = ops.run_wave()["routes"][0]
+    ops.recall_route(route["id"])
+    ops.driver_update(_tokens()[route["truck_id"]], route["stops"][0]["n"], "delivered", qty=qty, route_id=route["id"])
+    return route
+
+
+def test_a_late_delivery_report_holds_the_request_until_a_coordinator_settles_it():
+    import autopilot
+    import ops
+
+    _recalled_with_late_delivery()
+    i1 = ops._find(ops.load()["incidents"], "id", "I1")
+    assert i1["hold"]["qty"] == 60 and i1["status"] == "waiting" and i1["qty"] == 60
+    with pytest.raises(ops.OpsError, match="need you first"):
+        ops.run_wave()  # a coordinator's own wave leaves it out as well
+    autopilot.configure("propose")
+    ops._update(lambda st: st["autopilot"].update(last_plan_at=0))
+    assert autopilot.tick()["why"] == "no request is ready to send"
+
+    ops.add_report({"summary": "t", "hazards": [], "needs": [_need("Ennore", "water", 40, 4)]})
+    autopilot.configure("off")
+    w = ops.run_wave()  # other requests still go, and the log says what was left out
+    assert [s["zone"] for r in w["routes"] for s in r["stops"]] == ["Ennore"]
+    assert any("left out of this wave" in h for h in w["heals"])
+
+    before = _totals(ops.load())
+    ops.settle_late_report("I1", True, actor="lead@example.org")
+    st = ops.load()
+    i1 = ops._find(st["incidents"], "id", "I1")
+    assert i1["status"] == "delivered" and i1["delivered"] == 60 and i1["qty"] == 0 and not i1["hold"] and i1["delivered_at"]
+    assert _totals(st) == before  # the units moved from stock to delivered: none appeared or vanished
+    assert sum(d["stock"]["food"] for d in st["depots"]) == 3 * 400 - 60
+    with pytest.raises(ops.OpsError, match="no late report"):
+        ops.settle_late_report("I1", True)
+
+
+def test_rejecting_a_late_report_sends_a_truck_and_changes_no_stock():
+    import ops
+
+    route = _recalled_with_late_delivery(qty=20)
+    assert ops._find(ops.load()["incidents"], "id", "I1")["hold"]["qty"] == 20
+    food = sum(d["stock"]["food"] for d in ops.load()["depots"])
+    ops.settle_late_report("I1", False)
+    st = ops.load()
+    i1 = ops._find(st["incidents"], "id", "I1")
+    assert not i1["hold"] and i1["qty"] == 60 and i1["delivered"] == 0
+    assert sum(d["stock"]["food"] for d in st["depots"]) == food and st["autopilot"]["dirty"]
+    assert ops._find(st["routes"], "id", route["id"])["late_reports"][0]["settled"] == "not delivered"
+    assert [s["incident_id"] for s in ops.run_wave()["routes"][0]["stops"]] == ["I1"]
+
+
+def test_a_partial_late_delivery_leaves_the_rest_waiting_and_a_failed_one_holds_nothing():
+    import ops
+
+    _recalled_with_late_delivery(qty=20)
+    ops.settle_late_report("I1", True)
+    i1 = ops._find(ops.load()["incidents"], "id", "I1")
+    assert (i1["delivered"], i1["qty"], i1["status"]) == (20, 40, "waiting")
+    assert ops.run_wave()["routes"][0]["stops"][0]["qty"] == 40
+    ops.reset()
+    ops.add_report({"summary": "t", "hazards": [], "needs": [_need("Adyar", "food", 60, 5)]})
+    route = ops.run_wave()["routes"][0]
+    ops.recall_route(route["id"])
+    ops.driver_update(_tokens()[route["truck_id"]], route["stops"][0]["n"], "failed", route_id=route["id"])
+    assert not ops._find(ops.load()["incidents"], "id", "I1").get("hold")  # nothing was handed over
+    assert ops.run_wave()["routes"]
+
+
+def test_settling_a_cut_off_stop_on_a_route_still_out_keeps_the_units_right(monkeypatch):
+    import ops
+
+    for t in ops.load()["trucks"]:
+        if t["id"] != "D1-T1":
+            ops.set_truck(t["id"], in_service=False)
+    ops.add_report({"summary": "t", "hazards": [], "needs": [_need("Adyar", "food", 60, 5), _need("Velachery", "water", 40, 4)]})
+    adyar = ops._find(ops.load()["incidents"], "id", "I1")
+    _fake_router(monkeypatch, cut={(round(adyar["lat"], 4), round(adyar["lng"], 4))})
+    route = ops.run_wave()["routes"][0]
+    assert len(route["stops"]) == 2
+    start = _totals(ops.load())
+    h = route["shape"][len(route["shape"]) // 4]
+    ops._update(lambda st: ops._add_hazard(st, "Bridge gone", h[0], h[1], 0.2, "driver"))
+    res = ops.reroute_affected(["H1"])["rerouted"][0]
+    assert res["dropped"] and not res["closed"]
+    cut = next(s for s in route["stops"] if s["n"] == res["dropped"][0])
+    tok = _tokens()["D1-T1"]
+    ops.driver_update(tok, cut["n"], "delivered", route_id=route["id"])
+    ops.settle_late_report(cut["incident_id"], True)
+    assert _totals(ops.load()) == start
+    other = next(s for s in route["stops"] if s["n"] != cut["n"])
+    assert ops.driver_update(tok, other["n"], "delivered", route_id=route["id"])["closed"]
+    st = ops.load()
+    assert _totals(st) == start
+    assert sum(d["stock"]["food"] for d in st["depots"]) == 3 * 400 - cut["qty"]  # not returned to stock at close
+
+
+def test_approving_an_older_proposal_does_not_send_a_truck_to_a_request_now_on_hold():
+    import autopilot
+    import ops
+
+    _recalled_with_late_delivery()
+    ops.settle_late_report("I1", False)
+    autopilot.configure("propose")
+    ops._update(lambda st: st["autopilot"].update(last_plan_at=0))
+    p = autopilot.tick()["proposal"]
+    ops._update(lambda st: ops._find(st["incidents"], "id", "I1").update(hold={"route": "R1", "n": 1, "truck": "x", "qty": 60, "at": 0}))
+    out = autopilot.approve(p["id"], "lead@example.org")
+    assert not out["routes"] and ops._find(ops.load()["incidents"], "id", "I1")["assigned"] == 0
+
+
+def test_no_wave_goes_to_a_place_nobody_named_until_a_coordinator_sets_it():
+    import ops
+
+    unknown = agent._clean_need({"zone": "near the big temple", "item": "food", "qty": 30, "urgency": 5})
+    ops.add_report({"summary": "t", "hazards": [], "needs": [unknown]})
+    with pytest.raises(ops.OpsError, match="need you first"):
+        ops.run_wave()
+    ops.add_report({"summary": "t", "hazards": [], "needs": [_need("Ennore", "water", 40)]})
+    w = ops.run_wave()
+    assert [s["zone"] for r in w["routes"] for s in r["stops"]] == ["Ennore"] and any("left out" in h for h in w["heals"])
+    with pytest.raises(ops.OpsError, match="outside"):
+        ops.place_incident("I1", 19.07, 72.87)
+    with pytest.raises(ops.OpsError, match="not waiting for a place"):
+        ops.place_incident("I2", 13.0, 80.2)
+    ops.place_incident("I1", 12.982, 80.219, actor="lead@example.org")
+    st = ops.load()
+    i1 = ops._find(st["incidents"], "id", "I1")
+    assert i1["zone"] == "Velachery" and i1["located_by"] == "coordinator" and i1["note"] == "" and st["autopilot"]["dirty"]
+    stop = ops.run_wave()["routes"][0]["stops"][0]
+    assert stop["incident_id"] == "I1" and (stop["lat"], stop["lng"]) == (12.982, 80.219)
+    ops.reset()
+    ops.add_report({"summary": "t", "hazards": [], "needs": [unknown]})
+    ops.place_incident("I1", 13.0, 80.2, zone="Temple Street camp")
+    assert ops._find(ops.load()["incidents"], "id", "I1")["zone"] == "Temple Street camp"
+
+
+def test_settling_and_placing_need_a_coordinator(monkeypatch):
+    import main
+    import ops
+
+    main._hits.clear()
+    good = _sign_in_on(monkeypatch)
+    c = TestClient(main.app)
+    _recalled_with_late_delivery()
+    assert c.post("/api/ops/incidents/I1/late-report", json={"delivered": True}).status_code == 401
+    assert c.post("/api/ops/incidents/I1/place", json={"lat": 13.0, "lng": 80.2}).status_code == 401
+    assert ops._find(ops.load()["incidents"], "id", "I1")["hold"]
+    r = c.post("/api/ops/incidents/I1/late-report", json={"delivered": True}, headers=good).json()
+    assert next(i for i in r["ops"]["incidents"] if i["id"] == "I1")["status"] == "delivered"
+    assert c.post("/api/ops/incidents/I1/late-report", json={"delivered": True}, headers=good).status_code == 409
+    main._hits.clear()
