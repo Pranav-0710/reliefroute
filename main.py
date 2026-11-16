@@ -1,5 +1,6 @@
 """ReliefRoute API: FastAPI server for the multimodal disaster-relief logistics agent."""
 import json
+import logging
 import os
 import secrets
 import threading
@@ -19,6 +20,29 @@ import ops
 import roads
 
 app = FastAPI(title="ReliefRoute")
+log = logging.getLogger("reliefroute")
+
+
+@app.middleware("http")
+async def access_log(request: Request, call_next):
+    """One line per API call (method, path, status, ms) with a request id that is also sent back as
+    X-Request-ID. Paths under /driver and /track carry secret links, so only the first segment is logged."""
+    rid, start = secrets.token_hex(4), time.time()
+    parts = request.url.path.split("/")
+    path = "/".join(parts[:3]) + "/…" if parts[1:2] in (["driver"], ["track"]) or parts[1:3] in (["api", "driver"], ["api", "track"]) else request.url.path
+    try:
+        response = await call_next(request)
+    except Exception:
+        log.exception("%s %s %s failed", rid, request.method, path)
+        raise
+    response.headers["X-Request-ID"] = rid
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")  # secret links must not leak in Referer headers
+    if parts[1:2] in (["driver"], ["track"]) or parts[1:3] in (["api", "driver"], ["api", "track"]):
+        response.headers.setdefault("Cache-Control", "no-store")
+    log.info("%s %s %s -> %s in %d ms", rid, request.method, path, response.status_code, (time.time() - start) * 1000)
+    return response
 STATIC = Path(__file__).parent / "static"
 
 # ---- rate limits ----------------------------------------------------------------------
@@ -26,15 +50,21 @@ STATIC = Path(__file__).parent / "static"
 # of a public deployment; not a substitute for authentication.
 LIMITS = {"dispatch": (8, 600), "train": (60, 600), "mcp": (10, 600), "reset": (5, 600),  # (requests, seconds)
           "report": (12, 600), "wave": (30, 600), "sitrep": (6, 600), "driver": (120, 600), "admin": (60, 600),
-          "tick": (240, 600)}
+          "tick": (240, 600), "lookup": (120, 600)}
 MCP_COSTLY_TOOLS = {"dispatch_relief", "parse_field_report", "train_agent"}
 _hits: dict[tuple[str, str], list[float]] = {}
 _hits_lock = threading.Lock()
 
 
 def client_ip(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for", "")
-    return forwarded.split(",")[0].strip() or (request.client.host if request.client else "unknown")
+    """The caller's address. X-Forwarded-For is client-supplied up to the proxies we run behind, so take the
+    entry TRUST_PROXY_HOPS from the right (default 1: the address our own proxy saw), never the first one,
+    which a caller could forge to dodge the rate limits."""
+    hops = max(1, int(os.getenv("TRUST_PROXY_HOPS", "1") or 1))
+    parts = [p.strip() for p in request.headers.get("x-forwarded-for", "").split(",") if p.strip()]
+    if parts:
+        return parts[-hops] if len(parts) >= hops else parts[0]
+    return request.client.host if request.client else "unknown"
 
 
 def check_rate(request: Request, bucket: str):
@@ -107,6 +137,26 @@ def healthz():
     return {"ok": True, "llm": agent.llm_available(), "models": agent._models(),
             "rl_policy": agent.policy.available(), "gemini_budget": agent.budget_status(),
             "storage": ops.store.backend(), "road_router": roads.enabled(), "coordinator_sign_in": auth.enabled()}
+
+
+@app.get("/api/metrics")
+def metrics(request: Request):
+    """Counts and the stock forecast, without places or links: safe to show anyone."""
+    check_rate(request, "lookup")
+    return ops.metrics(ops.load())
+
+
+@app.get("/api/ops/export")
+def ops_export(request: Request, format: str = "csv", who: str = Depends(coordinator)):
+    """After-action export for coordinators: a CSV of every stop or the whole operation as JSON, no tokens."""
+    check_rate(request, "admin")
+    st = ops.load()
+    if format == "json":
+        return JSONResponse(ops.export_json(st), headers={"Content-Disposition": 'attachment; filename="operation.json"'})
+    if format != "csv":
+        raise HTTPException(400, detail="format must be csv or json")
+    return Response(ops.export_csv(st), media_type="text/csv",
+                    headers={"Content-Disposition": 'attachment; filename="stops.csv"'})
 
 
 @app.get("/api/config")
@@ -400,7 +450,8 @@ class StopReq(BaseModel):
 
 
 @app.get("/api/driver/{token}")
-def driver_state(token: str):
+def driver_state(token: str, request: Request):
+    check_rate(request, "lookup")
     out = ops.driver_view(token)
     if out is None:
         raise HTTPException(404, detail="Unknown driver link. Ask the coordinator for your truck's link.")
@@ -420,7 +471,8 @@ def driver_stop(token: str, n: int, req: StopReq, request: Request):
 
 
 @app.get("/api/track/{token}")
-def track_state(token: str):
+def track_state(token: str, request: Request):
+    check_rate(request, "lookup")
     out = ops.track_view(token)
     if out is None:
         raise HTTPException(404, detail="Unknown tracking link.")

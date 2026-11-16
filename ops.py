@@ -38,6 +38,16 @@ DUP_KM = 0.5  # two GPS positions this close, same item, still open, within DUP_
 DUP_GUESS_KM = 1.5  # when a position was guessed from a place name
 DUP_WINDOW_S = 12 * 3600
 KEEP_SHAPES = 20  # closed routes that keep their road geometry
+# The operation is one document (Firestore caps a document at 1 MiB), so finished work is trimmed. Totals of
+# what was trimmed stay in st["archive"], so the summary still counts the whole operation.
+KEEP_INCIDENTS = 300  # finished requests kept for the console and tracking links
+KEEP_ROUTES = 100  # closed routes kept
+KEEP_WAVES = 100
+KEEP_RESTOCKS = 200
+KEEP_HAZARDS = 100  # cleared hazards kept
+AGE_STEP_MIN = 60  # a waiting request counts one urgency level higher for every hour it waits (never above 5)
+FORECAST_WINDOW_H = 6  # demand is measured over the last few hours
+ARCHIVE = {"incidents": 0, "delivered": 0, "units_delivered": 0, "waves": 0}
 BLOCKED_RADIUS_KM = 0.5
 CONFIRM_KM = 1.0  # a second report of a hazard this close confirms the first
 OUTCOMES = ("delivered", "failed", "blocked")
@@ -76,12 +86,15 @@ def new_state():
                        for i, n, la, lo in DEPOTS],
             "trucks": [_new_truck(f"{i}-T{k + 1}", i) for i, *_ in DEPOTS for k in range(TRUCKS_PER_DEPOT)],
             "incidents": [], "reports": [], "routes": [], "hazards": [], "waves": [], "restocks": [], "log": [],
-            "autopilot": copy.deepcopy(AUTOPILOT), "proposals": []}
+            "autopilot": copy.deepcopy(AUTOPILOT), "proposals": [], "archive": dict(ARCHIVE)}
 
 
 def _fill(st):
     """Keys added after schema 2 shipped get their defaults, so a running operation is never wiped."""
     st.setdefault("proposals", [])
+    arc = st.setdefault("archive", {})
+    for k, v in ARCHIVE.items():
+        arc.setdefault(k, v)
     ap = st.setdefault("autopilot", {})
     for k, v in AUTOPILOT.items():
         ap.setdefault(k, copy.deepcopy(v))
@@ -97,6 +110,7 @@ def _update(mutate):
             st.clear()
             st.update(new_state(), version=version)
         out = mutate(_fill(st))
+        _prune(st)
         st["version"] += 1
         return out
     return store.update("ops", _path(), new_state, guarded)
@@ -293,6 +307,13 @@ def ready_to_send(inc):
     return inc["qty"] > 0 and not inc["closed"] and inc["located_by"] != "guess" and not inc.get("hold")
 
 
+def aged_urgency(inc, now=None):
+    """Urgency for planning: the reported level plus one for each AGE_STEP_MIN the request has waited, so a
+    low-urgency need is not passed over forever by newer, more urgent ones. The stored urgency is unchanged."""
+    waited = ((now or _now()) - inc["reported_at"]) // 60
+    return min(5, inc["urgency"] + max(0, waited // AGE_STEP_MIN))
+
+
 def plan_wave(st, heals):
     """Plan one wave over the incidents ready to send with the idle trucks. Writes nothing: commit_wave sends
     the trucks out, now (a coordinator's wave) or later (an autopilot proposal someone approves)."""
@@ -309,7 +330,9 @@ def plan_wave(st, heals):
     hazards = _routing_hazards(st)
     depots = [{**d, "trucks": [t["id"] for t in idle if t["depot_id"] == d["id"]],
                "capacity": {t["id"]: t["capacity"] for t in idle if t["depot_id"] == d["id"]}} for d in st["depots"]]
-    needs = [{k: i[k] for k in ("id", "zone", "lat", "lng", "item", "qty", "requested", "urgency")} for i in waiting]
+    now = _now()
+    needs = [{k: i[k] for k in ("id", "zone", "lat", "lng", "item", "qty", "requested")} | {"urgency": aged_urgency(i, now)}
+             for i in waiting]
 
     road = None
     try:
@@ -374,7 +397,7 @@ def commit_wave(planned, actor, heals, hook=None):
     plans, strategy, factor, now = planned["plans"], planned["strategy"], planned["eta_factor"], _now()
 
     def apply(st):
-        wave_no = len(st["waves"]) + 1
+        wave_no = st["archive"]["waves"] + len(st["waves"]) + 1
         trucks = {t["id"]: t for t in st["trucks"]}
         live = {i["id"]: i for i in st["incidents"]}
         made = []
@@ -447,6 +470,35 @@ def run_wave(actor="console"):
     """Plan one wave over every waiting incident with the idle trucks, then send each truck out."""
     heals = []
     return commit_wave(plan_wave(load(), heals), actor, heals)
+
+
+def _prune(st):
+    """Drop the oldest finished work beyond the KEEP_* limits; nothing still in play is ever removed."""
+    arc = st["archive"]
+    busy = {s["incident_id"] for r in st["routes"] if r["status"] == "active" for s in r["stops"]}
+    busy |= {i["id"] for i in st["incidents"] if i.get("hold")}
+    done = [i for i in st["incidents"] if i["id"] not in busy and (i["closed"] or (i["qty"] == 0 and i["assigned"] == 0))]
+    drop = {i["id"] for i in done[:max(0, len(done) - KEEP_INCIDENTS)]}
+    if drop:
+        for i in st["incidents"]:
+            if i["id"] in drop:
+                arc["incidents"] += 1
+                arc["delivered"] += i["status"] == "delivered"
+                arc["units_delivered"] += i["delivered"]
+        st["incidents"] = [i for i in st["incidents"] if i["id"] not in drop]
+    held = {i["hold"]["route"] for i in st["incidents"] if i.get("hold")}
+    closed = [r for r in st["routes"] if r["status"] != "active" and r["id"] not in held]
+    drop = {r["id"] for r in closed[:max(0, len(closed) - KEEP_ROUTES)]}
+    if drop:
+        st["routes"] = [r for r in st["routes"] if r["id"] not in drop]
+    if len(st["waves"]) > KEEP_WAVES:
+        arc["waves"] += len(st["waves"]) - KEEP_WAVES
+        st["waves"] = st["waves"][-KEEP_WAVES:]
+    st["restocks"] = st["restocks"][-KEEP_RESTOCKS:]
+    cleared = [h for h in st["hazards"] if not h["active"]]
+    drop = {h["id"] for h in cleared[:max(0, len(cleared) - KEEP_HAZARDS)]}
+    if drop:
+        st["hazards"] = [h for h in st["hazards"] if h["id"] not in drop]
 
 
 def _prune_shapes(st):
@@ -987,14 +1039,82 @@ def view(st, coordinator):
 def summary(st):
     now = _now()
     waiting = [i for i in st["incidents"] if i["qty"] > 0 and not i["closed"]]
+    arc = st.get("archive", ARCHIVE)
     return {"waiting": len(waiting), "en_route": sum(i["assigned"] > 0 for i in st["incidents"]),
-            "delivered": sum(i["status"] == "delivered" for i in st["incidents"]),
-            "units_delivered": sum(i["delivered"] for i in st["incidents"]),
+            "delivered": arc["delivered"] + sum(i["status"] == "delivered" for i in st["incidents"]),
+            "units_delivered": arc["units_delivered"] + sum(i["delivered"] for i in st["incidents"]),
             "hazards": len(_active_hazards(st)), "unconfirmed_hazards": len(_active_hazards(st)) - len(_routing_hazards(st)),
-            "waves": len(st["waves"]),
+            "waves": arc["waves"] + len(st["waves"]),
             "trucks_out": sum(t["status"] == "on_route" for t in st["trucks"]),
             "trucks_free": sum(t["status"] == "idle" for t in st["trucks"]),
             "longest_wait_min": max([(now - i["reported_at"]) // 60 for i in waiting] or [0])}
+
+
+def stock_forecast(st):
+    """When each item runs out at the current pace: stock across all depots divided by the units requested per
+    hour over the last FORECAST_WINDOW_H hours (or since the operation started, if that is shorter). Items with
+    no recent demand are left out. Sorted soonest first; hours_left is None when stock is already 0."""
+    now = _now()
+    hours = max(0.25, min(FORECAST_WINDOW_H, (now - st["started"]) / 3600))
+    demand = {}
+    for i in st["incidents"]:
+        if now - i["reported_at"] <= FORECAST_WINDOW_H * 3600:
+            demand[i["item"]] = demand.get(i["item"], 0) + i["requested"]
+    out = []
+    for item in ITEMS:
+        stock = sum(d["stock"].get(item, 0) for d in st["depots"])
+        rate = demand.get(item, 0) / hours
+        if rate > 0:
+            out.append({"item": item, "stock": stock, "units_per_hour": round(rate, 1),
+                        "hours_left": round(stock / rate, 1) if stock else 0.0})
+    return sorted(out, key=lambda f: f["hours_left"])
+
+
+def metrics(st):
+    """Counts only, safe to show anyone: no places, people or links."""
+    return {"summary": summary(st), "forecast": stock_forecast(st), "depots": len(st["depots"]),
+            "trucks": len(st["trucks"]), "incidents_kept": len(st["incidents"]), "archive": st["archive"],
+            "autopilot": st["autopilot"]["mode"], "gemini_budget": agent.budget_status()}
+
+
+def _cell(v):
+    """A CSV cell that a spreadsheet will not run as a formula."""
+    v = "" if v is None else str(v)
+    return "'" + v if v[:1] in ("=", "+", "-", "@", "\t", "\r") else v
+
+
+def export_csv(st):
+    """One row per stop of every route kept in the operation, for after-action review."""
+    import csv
+    import io
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    cols = ["route", "wave", "truck", "depot", "strategy", "route_status", "stop", "zone", "item", "qty",
+            "delivered_qty", "stop_status", "eta_min", "minutes_after_dispatch", "note"]
+    w.writerow(cols)
+    for r in st["routes"]:
+        for s in r["stops"]:
+            mins = round((s["at"] - r["created_at"]) / 60, 1) if s.get("at") else ""
+            w.writerow([_cell(x) for x in (r["id"], r["wave"], r["truck_id"], r["depot_id"], r["strategy"], r["status"],
+                                           s["n"], s["zone"], s["item"], s["qty"], s["delivered_qty"], s["status"],
+                                           s["eta_min"], mins, s["note"])])
+    return buf.getvalue()
+
+
+def export_json(st):
+    """The operation without links or tokens: figures, requests, stops, hazards and the forecast."""
+    keep = ("id", "zone", "item", "requested", "qty", "assigned", "delivered", "urgency", "status", "reports",
+            "reported_at", "delivered_at", "source", "closed")
+    return {"exported_at": _now(), "summary": summary(st), "archive": st["archive"], "forecast": stock_forecast(st),
+            "incidents": [{k: i.get(k) for k in keep} for i in st["incidents"]],
+            "routes": [{"id": r["id"], "wave": r["wave"], "truck": r["truck_id"], "depot": r["depot_id"],
+                        "strategy": r["strategy"], "status": r["status"], "created_at": r["created_at"],
+                        "closed_at": r.get("closed_at"),
+                        "stops": [{k: s.get(k) for k in ("n", "incident_id", "zone", "item", "qty", "delivered_qty",
+                                                         "status", "eta_min", "at", "note")} for s in r["stops"]]}
+                       for r in st["routes"]],
+            "hazards": [{k: h.get(k) for k in ("id", "label", "active", "verified", "source", "reported_at")}
+                        for h in st["hazards"]]}
 
 
 # ---- situation report --------------------------------------------------------------
@@ -1018,6 +1138,7 @@ def _sitrep_data(st):
     return {"time": _ist(now), "operation_started": _ist(st["started"]), "figures": summary(st),
             "areas": list(areas.values()), "hazards": [h["label"] for h in _active_hazards(st)],
             "active_routes": active, "stock": {d["name"]: d["stock"] for d in st["depots"]},
+            "stock_forecast": stock_forecast(st),
             "recent_waves": st["waves"][-3:]}
 
 

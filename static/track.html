@@ -65,19 +65,73 @@
 </style>
 </head>
 <body>
-<header class="topbar"><span class="mark">RELIEFROUTE</span><span class="ctx">Request status</span></header>
+<header class="topbar"><span class="mark">RELIEFROUTE</span><span class="ctx" data-t="ctx">Request status</span>
+  <select class="right" id="lang" aria-label="Language" style="background:#0a0c0f;color:#e9e7e3;border:1px solid #2b333d;font:12px monospace;padding:4px 6px"><option value="en">English</option><option value="ta">தமிழ்</option><option value="hi">हिन्दी</option></select></header>
 <main>
-  <h1>Your request</h1>
-  <p class="sub" id="sub">Loading…</p>
+  <h1 data-t="h1">Your request</h1>
+  <p class="sub" id="sub" data-t="loading">Loading…</p>
   <div id="list" aria-live="polite"></div>
   <p class="note" id="updated"></p>
-  <button class="refresh" id="refresh" type="button">Check now</button>
-  <footer>This page updates by itself. Bookmark it to check later. <a href="/report">Send another report</a></footer>
+  <button class="refresh" id="refresh" type="button" data-t="check">Check now</button>
+  <footer><span data-t="foot">This page updates by itself. Bookmark it to check later.</span> <a href="/report" data-t="another">Send another report</a></footer>
 </main>
 <script>
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const TOKEN = location.pathname.split("/").filter(Boolean).pop();
+
+// Wording for the three languages reporters write in. Tamil and Hindi should be checked by a native speaker.
+const TEXT = {
+  en: { ctx: "Request status", h1: "Your request", loading: "Loading…", check: "Check now",
+    foot: "This page updates by itself. Bookmark it to check later.", another: "Send another report",
+    sent: "Sent", received: "Received", stuck: "A truck could not get through",
+    stuckNote: "your request is back in the queue for the next truck", onway: "Truck on the way",
+    expected: "expected around", delivered: "Delivered", handed: (n, total, item) => `${n} of ${total} ${item} handed over`,
+    closed: "Closed by the coordination desk", waiting: "Waiting for a truck",
+    closedNote: "The desk closed this request, for example because it was resolved locally. If you still need help, send a new report.",
+    people: n => `${n} people reported this need; it is handled as one request.`,
+    none: hz => `No supplies were recognised in this report${hz ? ", but the road hazard you reported is on the dispatch map" : ""}. The desk can still read your message.`,
+    cannot: "Cannot load this request", updated: "Updated", retry: "no connection, retrying",
+    items: { water: "water", food: "food", medicine: "medicine", blankets: "blankets" } },
+  ta: { ctx: "கோரிக்கை நிலை", h1: "உங்கள் கோரிக்கை", loading: "ஏற்றுகிறது…", check: "இப்போது பார்",
+    foot: "இந்தப் பக்கம் தானாகப் புதுப்பிக்கப்படும். பின்னர் பார்க்க புக்மார்க் செய்யுங்கள்.", another: "மற்றொரு தகவல் அனுப்புங்கள்",
+    sent: "அனுப்பியது", received: "பெறப்பட்டது", stuck: "ஒரு லாரி வர முடியவில்லை",
+    stuckNote: "உங்கள் கோரிக்கை அடுத்த லாரிக்காக வரிசையில் மீண்டும் உள்ளது", onway: "லாரி வந்துகொண்டிருக்கிறது",
+    expected: "எதிர்பார்க்கப்படும் நேரம்", delivered: "வழங்கப்பட்டது", handed: (n, total, item) => `${total}-இல் ${n} ${item} வழங்கப்பட்டது`,
+    closed: "ஒருங்கிணைப்பு மையம் இதை முடித்துவிட்டது", waiting: "லாரிக்காகக் காத்திருக்கிறது",
+    closedNote: "இந்தக் கோரிக்கை மையத்தால் முடிக்கப்பட்டது, எடுத்துக்காட்டாக உள்ளூரிலேயே தீர்க்கப்பட்டதால். இன்னும் உதவி தேவைப்பட்டால் புதிய தகவல் அனுப்புங்கள்.",
+    people: n => `${n} பேர் இந்தத் தேவையைத் தெரிவித்தனர்; இது ஒரே கோரிக்கையாகக் கையாளப்படுகிறது.`,
+    none: hz => `இந்தத் தகவலில் பொருட்கள் எதுவும் அடையாளம் காணப்படவில்லை${hz ? ", ஆனால் நீங்கள் தெரிவித்த சாலை ஆபத்து வரைபடத்தில் உள்ளது" : ""}. மையம் உங்கள் செய்தியைப் படிக்க முடியும்.`,
+    cannot: "இந்தக் கோரிக்கையை ஏற்ற முடியவில்லை", updated: "புதுப்பிக்கப்பட்டது", retry: "இணைப்பு இல்லை, மீண்டும் முயல்கிறது",
+    items: { water: "தண்ணீர்", food: "உணவு", medicine: "மருந்து", blankets: "போர்வைகள்" } },
+  hi: { ctx: "अनुरोध की स्थिति", h1: "आपका अनुरोध", loading: "लोड हो रहा है…", check: "अभी देखें",
+    foot: "यह पेज अपने आप अपडेट होता है। बाद में देखने के लिए बुकमार्क करें।", another: "एक और रिपोर्ट भेजें",
+    sent: "भेजा गया", received: "प्राप्त हुआ", stuck: "एक ट्रक नहीं पहुँच सका",
+    stuckNote: "आपका अनुरोध अगले ट्रक के लिए फिर से कतार में है", onway: "ट्रक रास्ते में है",
+    expected: "अनुमानित समय", delivered: "पहुँचा दिया गया", handed: (n, total, item) => `${total} में से ${n} ${item} सौंपा गया`,
+    closed: "समन्वय डेस्क ने इसे बंद कर दिया", waiting: "ट्रक का इंतज़ार है",
+    closedNote: "डेस्क ने यह अनुरोध बंद कर दिया, जैसे कि स्थानीय स्तर पर हल हो गया। अगर अब भी मदद चाहिए तो नई रिपोर्ट भेजें।",
+    people: n => `${n} लोगों ने यह ज़रूरत बताई; इसे एक ही अनुरोध माना गया है।`,
+    none: hz => `इस रिपोर्ट में कोई सामान पहचाना नहीं गया${hz ? ", लेकिन आपके बताए सड़क के खतरे को डिस्पैच मैप पर दिखाया गया है" : ""}। डेस्क आपका संदेश फिर भी पढ़ सकता है।`,
+    cannot: "यह अनुरोध लोड नहीं हो सका", updated: "अपडेट किया गया", retry: "कनेक्शन नहीं, फिर कोशिश हो रही है",
+    items: { water: "पानी", food: "खाना", medicine: "दवा", blankets: "कंबल" } },
+};
+let lang = "en";
+try { lang = localStorage.getItem("lang") || (navigator.language || "en").slice(0, 2); } catch (e) { lang = (navigator.language || "en").slice(0, 2); }
+if (!TEXT[lang]) lang = "en";
+const T = () => TEXT[lang];
+const itemName = i => T().items[i] || i;
+function applyLang() {
+  document.documentElement.lang = lang;
+  $("lang").value = lang;
+  document.querySelectorAll("[data-t]").forEach(el => { el.textContent = T()[el.dataset.t]; });
+}
+$("lang").onchange = e => {
+  lang = e.target.value;
+  try { localStorage.setItem("lang", lang); } catch (err) { /* private mode */ }
+  applyLang();
+  load();
+};
 const clock = ts => new Date(ts * 1000).toLocaleString([], { hour: "2-digit", minute: "2-digit", day: "numeric", month: "short" });
 
 function card(i) {
@@ -85,20 +139,20 @@ function card(i) {
   const eta = coming.length ? Math.min(...coming.map(t => t.eta_at)) : null;
   const failed = i.trips.filter(t => ["failed", "blocked", "skipped", "unreachable"].includes(t.status));
   const steps = [
-    ["Received", true, clock(i.reported_at)],
-    ...(failed.length && i.status !== "delivered" ? [["A truck could not get through", "warn", "your request is back in the queue for the next truck"]] : []),
-    ["Truck on the way", i.assigned > 0 || i.delivered > 0, eta ? `expected around ${clock(eta)}` : ""],
-    ["Delivered", i.status === "delivered", i.delivered ? `${i.delivered} of ${i.requested} ${esc(i.item)} handed over` : ""],
+    [T().received, true, clock(i.reported_at)],
+    ...(failed.length && i.status !== "delivered" ? [[T().stuck, "warn", T().stuckNote]] : []),
+    [T().onway, i.assigned > 0 || i.delivered > 0, eta ? `${T().expected} ${clock(eta)}` : ""],
+    [T().delivered, i.status === "delivered", i.delivered ? esc(T().handed(i.delivered, i.requested, itemName(i.item))) : ""],
   ];
   const now = steps.findIndex(s => !s[1]);
-  const headline = i.status === "closed" ? "Closed by the coordination desk"
-    : i.status === "delivered" ? "Delivered" : i.assigned > 0 ? "Truck on the way" : "Waiting for a truck";
+  const headline = i.status === "closed" ? T().closed
+    : i.status === "delivered" ? T().delivered : i.assigned > 0 ? T().onway : T().waiting;
   return `<div class="card ${i.status === "delivered" ? "delivered" : i.assigned > 0 ? "en_route" : ""}">` +
-    `<h2>${esc(i.zone)}: ${i.requested} ${esc(i.item)}</h2><div>${headline}</div>` +
-    (i.status === "closed" ? `<p class="note">The desk closed this request, for example because it was resolved locally. If you still need help, send a new report.</p>`
+    `<h2>${esc(i.zone)}: ${i.requested} ${esc(itemName(i.item))}</h2><div>${headline}</div>` +
+    (i.status === "closed" ? `<p class="note">${T().closedNote}</p>`
       : `<ol class="steps">${steps.map(([t, done, d], k) =>
       `<li class="${done === "warn" ? "warn" : done ? "done" : k === now ? "now" : ""}"${k === now ? ' aria-current="step"' : ""}>${t}${d ? ` · ${d}` : ""}</li>`).join("")}</ol>`) +
-    (i.reports > 1 ? `<div class="note">${i.reports} people reported this need; it is handled as one request.</div>` : "") +
+    (i.reports > 1 ? `<div class="note">${T().people(i.reports)}</div>` : "") +
     `</div>`;
 }
 
@@ -108,18 +162,19 @@ async function load() {
     const r = await fetch(`/api/track/${TOKEN}`);
     const body = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(body.detail || `Server error ${r.status}`);
-    $("sub").textContent = `Sent ${clock(body.report.at)}` + (body.report.summary ? ` · "${body.report.summary}"` : "");
+    $("sub").textContent = `${T().sent} ${clock(body.report.at)}` + (body.report.summary ? ` · "${body.report.summary}"` : "");
     $("list").innerHTML = body.incidents.map(card).join("") ||
-      `<div class="card">No supplies were recognised in this report${body.report.hazards ? ", but the road hazard you reported is on the dispatch map" : ""}. The desk can still read your message.</div>`;
+      `<div class="card">${T().none(body.report.hazards)}</div>`;
     loaded = true;
-    $("updated").textContent = `Updated ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+    $("updated").textContent = `${T().updated} ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
   } catch (e) {
     // weak signal: keep the last good status on screen instead of replacing it with an error
-    if (loaded) { if (!$("updated").textContent.includes("retrying")) $("updated").textContent += " · no connection, retrying"; return; }
-    $("sub").textContent = ""; $("list").innerHTML = `<div class="card bad"><h2>Cannot load this request</h2><p>${esc(e.message)}</p></div>`;
+    if (loaded) { if (!$("updated").textContent.includes(T().retry)) $("updated").textContent += ` · ${T().retry}`; return; }
+    $("sub").textContent = ""; $("list").innerHTML = `<div class="card bad"><h2>${T().cannot}</h2><p>${esc(e.message)}</p></div>`;
   }
 }
 $("refresh").onclick = load;
+applyLang();
 load();
 setInterval(() => { if (!document.hidden) load(); }, 20000);
 </script>

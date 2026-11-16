@@ -171,6 +171,10 @@ flowchart LR
   - **Lessons:** failed and blocked stops, and the reasons coordinators give for rejecting a plan, become lessons for the planner.
   - **Hazards:** a blocked road becomes a hazard immediately, so every route avoids it. The coordinator clears it when the road reopens.
 - **Resources** are managed at runtime: open depots, add trucks of any size, take trucks out of service, recall a route, log incoming supplies, close requests that need no delivery. Every change is written to the activity log with who made it.
+- **Waiting requests age.** For planning, a request counts one urgency level higher for every hour it waits (never above 5), so a low-urgency need is not passed over forever. The reported urgency itself is not changed.
+- **Stock forecast.** From the units requested over the last 6 hours, the console data and the situation report say how many hours each item's total stock will last, soonest first. This is in addition to the fixed "under 100 units" alert.
+- **After-action export.** Coordinators can download every stop as CSV, or the whole operation as JSON, without tokens or links. `/api/metrics` shows counts only, for anyone.
+- **The tracking page speaks English, Tamil and Hindi.** It picks the phone's language and has a switch; the wording is a first draft that a native speaker should check.
 - **The situation report** summarises the operation: priorities, trucks out, blocked roads, stock alerts and recommended actions.
   - Gemini writes it from the live data only.
   - Stock alerts are always computed exactly (items under 100 units) rather than left to Gemini.
@@ -262,23 +266,28 @@ While deciding, the policy simulates the trucks exactly as the simulator loads t
 
 Training uses a **group-relative baseline**, as in GRPO: each scenario is played 8 times, and every attempt is judged against the other attempts on the same scenario, so easy and hard scenarios no longer blur the signal. The run used 32,000 episodes on a laptop CPU.
 
-Evaluation uses 500 scenarios the policy never saw during training, all with the mid-delivery bridge collapse switched on:
+The simulator has two modes. The **normal** mode has one bridge collapse after the first plan. The **hard** mode (`reset(hard=True)`) is closer to a real flood:
+- about half of the flooded roads are unknown at planning time, and a truck that meets one stops short and reveals it
+- a second bridge collapses in round 2
+- 1 to 3 new urgent requests arrive after round 1
+- depots hold about 60% of the usual stock
+- every leg runs at 60 to 120% of the planned speed
 
-| Strategy | Average score on 500 held-out scenarios |
-|---|---|
-| Trained policy (`rl_policy`) | **80.6%** |
-| Same networks before training | 78.0% |
-| `urgency_first` (best hand-written rule) | 80.0% |
-| `nearest_first` | 79.2% |
-| `fifo` (naive baseline) | 32.9% |
+The policy in the repository was trained on the hard mode (32,000 episodes, about 14 minutes on a laptop CPU). Evaluation uses 500 scenarios it never saw during training, with the mid-delivery bridge collapse switched on:
 
-Paired on the same 500 scenarios, the trained policy beats `urgency_first` by **+0.57 points (95% CI +0.33 to +0.81)**. It wins 155 scenarios, ties 238 and loses 107. The edge is small but statistically clear.
+| Strategy | Normal mode | Hard mode |
+|---|---|---|
+| Trained policy (`rl_policy`) | **80.5%** | **54.6%** |
+| Same networks before training | not measured | 48.8% |
+| `urgency_first` (best hand-written rule) | 80.0% | 52.6% |
+| `nearest_first` | 79.2% | 48.6% |
+| `fifo` (naive baseline) | 32.9% | 15.6% |
 
-How much room was there? Choosing the best of 40 sampled plans per scenario, with hindsight, reaches about 82.5% (measured on 100 of these scenarios). So the best hand-written rule was already close to the ceiling of this simulator.
+Paired on the same 500 scenarios (`python rl/paired.py`), the trained policy beats `urgency_first` by **+1.94 points on the hard mode (95% CI +1.20 to +2.68; it wins 281, ties 26, loses 193)** and by **+0.54 points on the normal mode (95% CI +0.28 to +0.79)**. Every strategy loses about 27 points on the hard mode, so there is far more room to improve there than in the normal mode, where the best rule is already close to the ceiling.
 
-Most of the jump over the previous version (55.7% untrained, 80.2% trained) came from the truck-aware decision procedure itself: even untrained, it scores 78.0%.
+Training on the normal mode first and then on the hard mode (a curriculum, `--init`) was tried and was worse on the hard mode (53.7%), so the repository keeps the policy trained on the hard mode directly.
 
-The exported weights reproduce the PyTorch result exactly (80.6%) in pure Python, and that is what the live app runs as the `rl_policy` strategy.
+The exported weights reproduce the PyTorch result exactly (54.6% on the hard mode) in pure Python, and that is what the live app runs as the `rl_policy` strategy. Reproduce the table without PyTorch with `python rl/evaluate_hard.py`.
 
 ![Training curve](docs/rl_training.png)
 
@@ -286,10 +295,10 @@ To retrain:
 
 ```bash
 pip install -r requirements-train.txt
-python rl/train_policy.py --episodes 32000 --batch 64 --group 8 --hidden 24 --lr 0.005
+python rl/train_policy.py --hard --episodes 32000 --batch 64 --group 8 --hidden 24 --lr 0.005
 ```
 
-This writes `policy_weights.json`, `rl/results.json` and `docs/rl_training.png`.
+Leave out `--hard` to train on the normal mode. This writes `policy_weights.json`, `rl/results.json` and `docs/rl_training.png`.
 
 ## OpenEnv environment
 
@@ -374,7 +383,7 @@ Open http://localhost:8080.
 pytest -q
 ```
 
-The 57 tests run without network access or an API key. Gemini, the road router and Firebase sign-in are replaced by fakes. The OpenEnv test is skipped if the `openenv` package isn't installed. They cover:
+The 66 tests run without network access or an API key. Gemini, the road router and Firebase sign-in are replaced by fakes. The OpenEnv test is skipped if the `openenv` package isn't installed. They cover:
 - the simulator contract and truck rules: capacity, stop order, arrival times, a full fleet
 - recovery after a blocked route
 - guardrail repair
@@ -470,6 +479,8 @@ reliefroute = McpToolset(connection_params=StreamableHTTPConnectionParams(url="h
 | `GET` | `/api/ops` | Operation state and summary figures. Driver links only for coordinators. |
 | `POST` | `/api/ops/wave` | Plans and sends out one wave over all waiting incidents (coordinator). 409 if nothing is waiting or no truck is free. |
 | `POST` | `/api/ops/sitrep` | Situation report as text plus structured sections (coordinator) |
+| `GET` | `/api/metrics` | Counts only (waiting, trucks out, delivered, archive), the stock run-out forecast and the Gemini budget. No places, people or links. |
+| `GET` | `/api/ops/export?format=csv\|json` | After-action export (coordinator): one CSV row per stop, or the whole operation as JSON. No tokens or links; CSV cells cannot run as spreadsheet formulas. |
 | `POST` | `/api/ops/reset` | Starts a new operation (coordinator) |
 | `POST` | `/api/ops/depots` | JSON `{"name", "lat", "lng"}`: opens a depot (coordinator) |
 | `POST`, `PATCH` | `/api/ops/trucks`, `/api/ops/trucks/{id}` | Adds a truck `{"depot_id", "capacity"}`; changes `capacity` or `in_service` (coordinator) |
@@ -561,7 +572,7 @@ gcloud run deploy reliefroute --source . --region asia-south1 --allow-unauthenti
 
 - **Road routing uses a public server.** Live routes come from the public FOSSGIS Valhalla instance on OpenStreetMap data. It is free, has no service guarantee, and asks for fair use; a real deployment should run its own Valhalla (`ROUTER_URL`). Drive times assume normal roads, so the learned ETA correction is what adapts them to flood conditions. When the router is unreachable, the agent plans on straight-line estimates and says so. The Google Maps Routes API is not used for live routes: it needs a Google Cloud project with billing, and ours is closed.
 - **Hazards are circles.** A reported flood or a driver's blocked road is an area of fixed radius (0.8 km for reports, 0.5 km from drivers), not the exact flooded segment. A hazard that covers a stop itself cannot be avoided and is not sent to the router; the driver is warned instead.
-- **A "second source" is a different address.** Two people on the same network (a camp's Wi-Fi, a carrier's shared address) count as one, so a coordinator has to confirm; someone switching networks counts as two. On a host that does not set `X-Forwarded-For` itself, the header could be forged.
+- **A "second source" is a different address.** Two people on the same network (a camp's Wi-Fi, a carrier's shared address) count as one, so a coordinator has to confirm; someone switching networks counts as two. The address is read from the right of `X-Forwarded-For`, counting `TRUST_PROXY_HOPS` proxies (default 1); set it to the number of proxies in front of the app.
 - **A late report needs a person.** A request on hold waits for a coordinator, however urgent it is. If a second truck was already out when the report arrived, that truck keeps going until a coordinator recalls it. Requests with no known place also wait for a coordinator: the reporter is not asked for the place.
 - **The autopilot needs a tick.** Serverless functions do not run in the background, so the autopilot plans only when something calls it: the coordinator console every 15 seconds while it is open, or a scheduler with `AGENT_TICK_SECRET`. With neither, nothing is planned by itself. Rerouting does not depend on it: it runs as part of the driver's or reporter's request.
 - **Truck positions come from drivers' taps.** There is no live GPS tracking: rerouting starts from the position sent with the driver's last update, or the last stop, or the depot. At most 5 trucks are rerouted per new hazard; the rest see it on their map.
@@ -569,9 +580,9 @@ gcloud run deploy reliefroute --source . --region asia-south1 --allow-unauthenti
 - **Duplicate detection is a rule.** Same item, same place (0.5 km between GPS positions; the same locality when a position is guessed from the text), within 12 hours. Two genuinely different groups in one locality reported without GPS are merged; the coordinator sees the report count on the request and can still dispatch more.
 - **Links are the credentials for drivers and reporters.** Anyone holding a truck's driver link can record its stops, and a new operation issues new links. Coordinator sign-in is off until it is configured (see Deployment); while it is off, anyone with the console link can dispatch and reset. Rate limits and the daily Gemini budget are kept per server instance.
 - **The simulator data is simulated.** In the Simulator tab, depot stock, the other requests, flood zones and the bridge collapse are generated, and distances are straight lines times 1.3. Live operations use real roads but start from three example depots with 400 units of each item.
-- **The RL policy is trained offline and is small.** Its weights are updated in training, not while the app runs; online learning is the bandit, the lessons and the field feedback. It matches the best hand-written rule rather than clearly beating it. Gemini itself is not fine-tuned.
+- **The RL policy is trained offline and is small.** Its weights are updated in training, not while the app runs; online learning is the bandit, the lessons and the field feedback. It beats the best hand-written rule by about 2 points on the hard simulator and half a point on the normal one. Gemini itself is not fine-tuned.
 - **Field results compare unlike scores.** The field score (share of loaded relief delivered) and the simulator score (share of the best possible outcome) are both percentages but not the same measure; blending them is a deliberate approximation until enough real routes exist. Live waves never explore: a strategy that is never chosen gets no field data.
-- **One document per operation.** The live operation is a single Firestore document (limit 1 MiB). Old routes drop their road geometry to stay small, which is enough for thousands of incidents but not for a city-wide operation over weeks.
+- **One document per operation.** The live operation is a single Firestore document (limit 1 MiB). Old routes drop their road geometry, and finished requests, closed routes, waves, restocks and cleared hazards beyond fixed limits are trimmed (totals are kept in an archive), so the document stays small for a long operation. It is still one document, so heavy simultaneous writes retry on conflict.
 
 ## Next steps
 

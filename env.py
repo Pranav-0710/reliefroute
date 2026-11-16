@@ -96,18 +96,28 @@ class ReliefEnv:
     def __init__(self):
         self._s = None
         self._rng = random.Random()
+        self._travel_rng = None
 
     # ---- OpenEnv contract -------------------------------------------------
     def reset(self, seed=None, extra_needs=None, extra_hazards=None, chaos=True, n_needs=5, random_hazards=True,
-              depots=None):
-        """depots: optional live depots [{id, name, lat, lng, stock, trucks, capacity: {truck: units}}]."""
+              depots=None, hard=False):
+        """depots: optional live depots [{id, name, lat, lng, stock, trucks, capacity: {truck: units}}].
+
+        hard=True makes the scenario closer to a real flood (the default scenarios are unchanged):
+          - about half of the flooded roads are not known when the first plan is made; a truck that meets
+            one stops short and the road is known from then on
+          - a second bridge collapses in round 2
+          - 1-3 new requests arrive after round 1
+          - depots hold about 60% of the usual stock
+          - every leg's real speed differs from the planner's estimate (60-120% of 25 km/h)
+        """
         rng = self._rng = random.Random(seed)
         if depots is not None:
             depots = [{"id": d["id"], "name": d["name"], "lat": d["lat"], "lng": d["lng"], "stock": dict(d["stock"]),
                        "trucks": list(d["trucks"]), "capacity": dict(d.get("capacity") or {})} for d in depots]
         else:
             depots = [{"id": i, "name": n, "lat": la, "lng": lo,
-                       "stock": {it: rng.randint(60, 260) for it in ITEMS},
+                       "stock": {it: rng.randint(60, 260) * (6 if hard else 10) // 10 for it in ITEMS},
                        "trucks": [f"{i}-T{k + 1}" for k in range(TRUCKS_PER_DEPOT)], "capacity": {}}
                       for i, n, la, lo in DEPOTS]
         needs = []
@@ -127,13 +137,28 @@ class ReliefEnv:
         for h in extra_hazards or []:
             hazards.append({"id": f"H{len(hazards) + 1}", "label": h.get("label", "Field-reported hazard"),
                             "lat": h["lat"], "lng": h["lng"], "radius_km": h.get("radius_km", 0.8), "known": True})
+        arrivals = {}
+        self._travel_rng = None
+        if hard:  # drawn last, so the default scenarios of a seed are the same with or without hard mode
+            for h in hazards:
+                h["known"] = rng.random() < 0.5
+            late = []
+            for k in range(rng.randint(1, 3)):
+                zone, la, lo = rng.choice(ZONES)
+                late.append({"id": f"L{k + 1}", "zone": zone, "lat": la + rng.uniform(-0.01, 0.01),
+                             "lng": lo + rng.uniform(-0.01, 0.01), "item": rng.choice(ITEMS),
+                             "qty": rng.randint(30, 150), "urgency": rng.randint(3, 5), "source": "sim"})
+            arrivals = {1: late}
+            self._travel_rng = random.Random(rng.random())
         for n in needs:
             n["requested"] = n.get("requested") or n["qty"]  # partly served incidents keep their original size
+        for n in arrivals.get(1, []):
+            n["requested"] = n["qty"]
         self._s = {"seed": seed, "step": 0, "depots": depots, "needs": needs, "hazards": hazards,
                    "pending": [n["id"] for n in needs], "deliveries": [], "events": [],
-                   "total_reward": 0.0, "done": False, "chaos": chaos,
+                   "total_reward": 0.0, "done": False, "chaos": chaos, "hard": hard, "arrivals": arrivals,
                    # best case: every need fully served instantly; used to normalise scores to %
-                   "max_reward": sum(n["urgency"] * 10 for n in needs)}
+                   "max_reward": sum(n["urgency"] * 10 for n in needs + arrivals.get(1, []))}
         return self.observation()
 
     def step(self, action):
@@ -153,7 +178,7 @@ class ReliefEnv:
 
         # Surprise event: a bridge collapses on the longest leg the trucks are about to drive
         # without a detour. A dry run loads the trucks exactly as the real run below does.
-        if s["chaos"] and s["step"] == 1 and plan:
+        if s["chaos"] and (s["step"] == 1 or (s["hard"] and s["step"] == 2)) and plan:
             fleet, legs = self._new_fleet(), []
             for a in plan:
                 t = self._pick_truck(fleet, a)
@@ -187,6 +212,9 @@ class ReliefEnv:
                 reward -= 5
                 info["blocked"].append({"need_id": n["id"], "depot_id": d["id"], "truck_id": t,
                                         "from": start, "hazards": hits})
+                for h in s["hazards"]:
+                    if h["id"] in hits:
+                        h["known"] = True  # the truck found it: every later plan sees it
                 continue
             qty = min(n["qty"], d["stock"].get(n["item"], 0), truck["cap"])
             if qty <= 0:
@@ -194,7 +222,7 @@ class ReliefEnv:
                 info["stockout"].append({"need_id": n["id"], "depot_id": d["id"]})
                 continue
             km = distance_km(truck["pos"], _pt(n)) * (DETOUR_FACTOR if a.get("detour") else 1)
-            truck["hours"] += km / SPEED_KMH  # arrival time at this stop, so later stops wait longer
+            truck["hours"] += km / (SPEED_KMH * self._speed())  # arrival time at this stop, so later stops wait longer
             # credit relative to the original request, so split deliveries can't exceed the best case
             reward += n["urgency"] * 10 * qty / n["requested"] - n["urgency"] * truck["hours"] * 4
             truck.update(pos=_pt(n), cap=truck["cap"] - qty, stops=truck["stops"] + 1)
@@ -209,6 +237,11 @@ class ReliefEnv:
             info["delivered"].append(delivery)
         info["trucks"] = {t: {"stops": v["stops"], "load": v["size"] - v["cap"], "minutes": round(v["hours"] * 60)}
                           for t, v in fleet.items() if v["stops"]}
+
+        for n in s["arrivals"].pop(s["step"], []):  # requests that come in while the trucks are out
+            s["needs"].append(n)
+            s["pending"].append(n["id"])
+            info.setdefault("arrived", []).append(n["id"])
 
         done = not s["pending"] or s["step"] >= MAX_STEPS
         if done:
@@ -226,6 +259,10 @@ class ReliefEnv:
         return {**s, "total_reward": round(s["total_reward"], 2)}
 
     # ---- helpers ----------------------------------------------------------
+    def _speed(self):
+        """Real speed relative to the planner's estimate: 1.0 normally, 0.6-1.2 in hard mode."""
+        return self._travel_rng.uniform(0.6, 1.2) if self._travel_rng else 1.0
+
     def observation(self):
         s = self._s
         pend = [self._need(i) for i in s["pending"]]
@@ -258,7 +295,7 @@ class ReliefEnv:
         return min(free, key=lambda t: (fleet[t]["hours"], fleet[t]["stops"], t)) if free else None
 
     def _blocked(self, depot, need):
-        return [h["id"] for h in self._s["hazards"] if _segment_hits(_pt(depot), _pt(need), h)]
+        return [h["id"] for h in self._s["hazards"] if h["known"] and _segment_hits(_pt(depot), _pt(need), h)]
 
     def _need(self, nid):
         return next((n for n in self._s["needs"] if n["id"] == nid), None)
