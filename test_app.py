@@ -1370,3 +1370,135 @@ def test_settling_and_placing_need_a_coordinator(monkeypatch):
     assert next(i for i in r["ops"]["incidents"] if i["id"] == "I1")["status"] == "delivered"
     assert c.post("/api/ops/incidents/I1/late-report", json={"delivered": True}, headers=good).status_code == 409
     main._hits.clear()
+
+
+def test_client_ip_ignores_forged_forwarded_for_prefix(monkeypatch):
+    from starlette.requests import Request
+    import main
+    monkeypatch.delenv("TRUST_PROXY_HOPS", raising=False)
+
+    def req(xff):
+        return Request({"type": "http", "headers": [(b"x-forwarded-for", xff.encode())], "client": ("1.1.1.1", 1)})
+    assert main.client_ip(req("6.6.6.6, 9.9.9.9")) == "9.9.9.9"  # forged first entry is ignored
+    monkeypatch.setenv("TRUST_PROXY_HOPS", "2")
+    assert main.client_ip(req("6.6.6.6, 9.9.9.9, 10.0.0.1")) == "9.9.9.9"
+
+
+def test_finished_work_is_trimmed_but_totals_and_open_work_survive(monkeypatch):
+    import ops
+    monkeypatch.setattr(ops, "KEEP_INCIDENTS", 3)
+    monkeypatch.setattr(ops, "KEEP_WAVES", 2)
+
+    def seed(st):
+        for n in range(6):  # six delivered requests, one request still waiting, five old waves
+            st["incidents"].append({"id": f"X{n}", "closed": False, "qty": 0, "assigned": 0, "delivered": 10,
+                                    "status": "delivered"})
+        st["incidents"].append({"id": "OPEN", "closed": False, "qty": 5, "assigned": 0, "delivered": 0,
+                                "status": "waiting", "reported_at": 0})
+        st["waves"] = [{"n": n} for n in range(5)]
+    ops._update(seed)
+    st = ops.load()
+    ids = [i["id"] for i in st["incidents"]]
+    assert "OPEN" in ids and len([i for i in ids if i.startswith("X")]) == 3
+    assert len(st["waves"]) == 2
+    s = ops.summary(st)
+    assert s["delivered"] == 6 and s["units_delivered"] == 60 and s["waves"] == 5
+
+
+def test_requests_get_an_id_and_secret_links_are_not_logged(caplog):
+    import logging
+    from fastapi.testclient import TestClient
+    import main
+    caplog.set_level(logging.INFO, logger="reliefroute")
+    r = TestClient(main.app).get("/api/driver/secret-token-123")
+    assert len(r.headers["x-request-id"]) == 8
+    text = " ".join(m for m in caplog.messages)
+    assert "secret-token-123" not in text and "/api/driver" in text
+
+
+def test_secret_link_pages_are_not_cached_or_leaked_and_lookups_are_rate_limited(monkeypatch):
+    from fastapi.testclient import TestClient
+    import main
+    monkeypatch.setitem(main.LIMITS, "lookup", (3, 600))
+    main._hits.clear()
+    c = TestClient(main.app)
+    r = c.get("/driver/whatever")
+    assert r.headers["referrer-policy"] == "no-referrer" and r.headers["cache-control"] == "no-store"
+    assert r.headers["x-content-type-options"] == "nosniff" and r.headers["x-frame-options"] == "DENY"
+    codes = [c.get("/api/track/guess%d" % n).status_code for n in range(5)]
+    assert codes == [404, 404, 404, 429, 429]
+    main._hits.clear()
+
+
+def test_hard_mode_adds_surprises_and_leaves_default_scenarios_unchanged():
+    from env import ReliefEnv
+    plain = ReliefEnv().reset(seed=3)
+    again = ReliefEnv().reset(seed=3, hard=False)
+    assert plain == again
+    env = ReliefEnv()
+    obs = env.reset(seed=3, hard=True)
+    st = env.state()
+    assert st["hard"] and st["arrivals"][1], "late requests are scheduled"
+    hidden = [h["id"] for h in st["hazards"] if not h["known"]]
+    assert {h["id"] for h in obs["known_hazards"]}.isdisjoint(hidden)  # the planner cannot see them
+    first = len(obs["pending_needs"])
+    res = env.step({"assignments": []})
+    assert len(res["observation"]["pending_needs"]) == first + len(st["arrivals"].get(1, [])) or res["info"]["arrived"]
+    assert env.state()["max_reward"] >= sum(n["urgency"] * 10 for n in env.state()["needs"])
+
+
+def test_a_truck_that_meets_a_hidden_flood_reveals_it_to_later_plans():
+    from env import ReliefEnv
+    env = ReliefEnv()
+    env.reset(seed=1, chaos=False, hard=True)
+    s = env._s
+    need = s["needs"][0]
+    s["hazards"] = [{"id": "HX", "label": "hidden", "lat": need["lat"], "lng": need["lng"], "radius_km": 0.5,
+                     "known": False}]
+    res = env.step({"assignments": [{"need_id": need["id"], "depot_id": s["depots"][0]["id"]}]})
+    assert res["info"]["blocked"] and any(h["id"] == "HX" for h in res["observation"]["known_hazards"])
+
+
+def _report(item="water", qty=100, urgency=2, zone="Velachery"):
+    return {"summary": "x", "needs": [{"zone": zone, "lat": 12.98, "lng": 80.22, "item": item, "qty": qty,
+                                       "urgency": urgency, "located": "report"}], "hazards": []}
+
+
+def test_waiting_requests_gain_urgency_over_time_but_keep_their_reported_level():
+    import ops
+    ops.add_report(_report(urgency=2))
+    inc = ops.load()["incidents"][0]
+    now = inc["reported_at"]
+    assert ops.aged_urgency(inc, now) == 2
+    assert ops.aged_urgency(inc, now + 2 * 3600 + 5) == 4
+    assert ops.aged_urgency(inc, now + 10 * 3600) == 5  # never above 5
+    assert inc["urgency"] == 2
+
+
+def test_stock_forecast_counts_recent_demand_against_stock():
+    import ops
+    ops.add_report(_report(item="water", qty=120))
+    fc = {f["item"]: f for f in ops.stock_forecast(ops.load())}
+    assert set(fc) == {"water"}  # no demand for the other items, so no forecast
+    assert fc["water"]["stock"] == 3 * ops.OPS_STOCK and fc["water"]["hours_left"] > 0
+
+
+def test_metrics_and_export_show_counts_and_never_tokens():
+    from fastapi.testclient import TestClient
+    import main
+    import ops
+    main._hits.clear()
+    ops.add_report(_report())
+    c = TestClient(main.app)
+    m = c.get("/api/metrics").json()
+    assert m["summary"]["waiting"] == 1 and "forecast" in m and "gemini_budget" in m
+    full = c.get("/api/ops/export?format=json")
+    assert full.status_code == 200 and "token" not in full.text
+    assert c.get("/api/ops/export?format=csv").text.startswith("route,wave,truck")
+    assert c.get("/api/ops/export?format=xml").status_code == 400
+    main._hits.clear()
+
+
+def test_csv_cells_cannot_run_as_formulas():
+    import ops
+    assert ops._cell("=1+1").startswith("'") and ops._cell("-5").startswith("'") and ops._cell("ok") == "ok"

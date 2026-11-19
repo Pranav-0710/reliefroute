@@ -38,15 +38,25 @@ class Scorer(nn.Module):
     def forward(self, x):
         return self.l2(torch.tanh(self.l1(x))).squeeze(-1)
 
+    def load(self, w):
+        with torch.no_grad():
+            self.l1.weight.copy_(torch.tensor(w["W1"]))
+            self.l1.bias.copy_(torch.tensor(w["b1"]))
+            self.l2.weight.copy_(torch.tensor([w["W2"]]))
+            self.l2.bias.fill_(w["b2"])
+
     def export(self):
         return {"W1": self.l1.weight.tolist(), "b1": self.l1.bias.tolist(),
                 "W2": self.l2.weight[0].tolist(), "b2": self.l2.bias.item()}
 
 
+HARD = False  # set by --hard: unknown flooded roads, a second collapse, late requests, less stock, noisy speeds
+
+
 def episode(seed, plan_fn):
     """Play one chaotic episode; returns normalised return (reward / best possible)."""
     env = ReliefEnv()
-    obs = env.reset(seed=seed, chaos=True)
+    obs = env.reset(seed=seed, chaos=True, hard=HARD)
     while True:
         res = env.step({"assignments": plan_fn(obs)})
         obs = res["observation"]
@@ -83,10 +93,19 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--hidden", type=int, default=24)
     ap.add_argument("--group", type=int, default=8, help="attempts per scenario for the group baseline")
+    ap.add_argument("--init", action="store_true",
+                    help="start from the weights in policy_weights.json (curriculum: normal first, then --hard)")
+    ap.add_argument("--hard", action="store_true", help="train and evaluate on the harder simulator")
     args = ap.parse_args()
+    global HARD
+    HARD = args.hard
     torch.manual_seed(args.seed)
 
     need_net, depot_net = Scorer(policy.N_NEED, args.hidden), Scorer(policy.N_PAIR, args.hidden)
+    if args.init:
+        saved = json.loads(policy.WEIGHTS_PATH.read_text(encoding="utf-8"))
+        need_net.load(saved["need"])
+        depot_net.load(saved["depot"])
     opt = torch.optim.Adam([*need_net.parameters(), *depot_net.parameters()], lr=args.lr)
 
     with torch.no_grad():
