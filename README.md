@@ -383,7 +383,7 @@ Open http://localhost:8080.
 pytest -q
 ```
 
-The 66 tests run without network access or an API key. Gemini, the road router and Firebase sign-in are replaced by fakes. The OpenEnv test is skipped if the `openenv` package isn't installed. They cover:
+The 69 tests run without network access or an API key. Gemini, the road router and Firebase sign-in are replaced by fakes. The OpenEnv test is skipped if the `openenv` package isn't installed. They cover:
 - the simulator contract and truck rules: capacity, stop order, arrival times, a full fleet
 - recovery after a blocked route
 - guardrail repair
