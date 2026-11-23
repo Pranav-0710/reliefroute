@@ -1502,3 +1502,63 @@ def test_metrics_and_export_show_counts_and_never_tokens():
 def test_csv_cells_cannot_run_as_formulas():
     import ops
     assert ops._cell("=1+1").startswith("'") and ops._cell("-5").startswith("'") and ops._cell("ok") == "ok"
+
+
+def test_export_needs_a_coordinator_when_sign_in_is_on_but_metrics_stay_public(monkeypatch):
+    import auth
+    import main
+    import ops
+    main._hits.clear()
+    monkeypatch.setenv("COORDINATOR_EMAILS", "lead@example.org")
+    monkeypatch.setenv("FIREBASE_WEB_API_KEY", "web-key")
+    monkeypatch.setenv("FIREBASE_PROJECT_ID", "relief-test")
+    monkeypatch.setattr(auth, "_verified", {})
+    monkeypatch.setattr(auth, "_verify", lambda t: {"email": "lead@example.org", "email_verified": True, "exp": 9e12}
+                        if t == "good" else (_ for _ in ()).throw(ValueError("bad")))
+    ops.add_report(_report())
+    c = TestClient(main.app)
+    for fmt in ("csv", "json"):
+        assert c.get(f"/api/ops/export?format={fmt}").status_code == 401
+        assert c.get(f"/api/ops/export?format={fmt}", headers={"Authorization": "Bearer forged"}).status_code == 401
+        assert c.get(f"/api/ops/export?format={fmt}", headers={"Authorization": "Bearer good"}).status_code == 200
+    public = c.get("/api/metrics")
+    assert public.status_code == 200 and "token" not in public.text and "lat" not in public.text
+    main._hits.clear()
+
+
+def test_trimming_never_removes_a_request_on_hold_or_on_an_active_route(monkeypatch):
+    import ops
+    monkeypatch.setattr(ops, "KEEP_INCIDENTS", 1)
+
+    def seed(st):
+        base = {"closed": True, "qty": 0, "assigned": 0, "delivered": 0, "status": "closed", "reported_at": 0}
+        st["incidents"] += [{**base, "id": f"OLD{n}"} for n in range(4)]
+        st["incidents"].append({**base, "id": "HELD", "hold": {"route": "R9", "n": 1}})
+        st["incidents"].append({**base, "id": "OUT", "closed": False, "assigned": 20, "status": "en_route"})
+        st["routes"].append({"id": "R9", "status": "done", "stops": [], "truck_id": "D1-T1", "depot_id": "D1",
+                             "wave": 1, "strategy": "x", "created_at": 0})
+        st["routes"].append({"id": "R10", "status": "active", "truck_id": "D1-T2", "depot_id": "D1", "wave": 1,
+                             "strategy": "x", "created_at": 0,
+                             "stops": [{"incident_id": "OUT", "n": 1, "status": "pending"}]})
+    ops._update(seed)
+    ids = {i["id"] for i in ops.load()["incidents"]}
+    assert {"HELD", "OUT"} <= ids
+    assert len([i for i in ids if i.startswith("OLD")]) <= 1
+    assert "R9" in {r["id"] for r in ops.load()["routes"]}  # the held request still needs its route
+
+
+def test_an_old_low_urgency_request_is_planned_with_its_aged_urgency(monkeypatch):
+    import ops
+    ops.add_report(_report(item="food", qty=40, urgency=1, zone="Adyar"))
+    ops._update(lambda st: st["incidents"][0].update(reported_at=ops._now() - 3 * 3600))
+    seen = {}
+    real = ops.ReliefEnv.reset
+
+    def spy(self, *a, **kw):
+        seen["urgency"] = [n["urgency"] for n in kw.get("extra_needs", [])]
+        return real(self, *a, **kw)
+    monkeypatch.setattr(ops.ReliefEnv, "reset", spy)
+    monkeypatch.setattr(ops.roads, "enabled", lambda: False)
+    ops.plan_wave(ops.load(), [])
+    assert seen["urgency"] == [4]  # reported at 1, waited 3 hours
+    assert ops.load()["incidents"][0]["urgency"] == 1
